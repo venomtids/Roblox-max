@@ -1,9 +1,8 @@
-# Python
-__pycache__/
-*.py[cod]
-.venv/
+# Arquivos temporarios de compilacao
+*.o
+*.obj
+*.pdb
+zig-cache/
+.zig-cache/
 
-# PyInstaller
-build/
-dist/
-*.spec
+# O executavel final em release/ e distribuido intencionalmente.

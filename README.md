@@ -1,52 +1,35 @@
-# Roblox Fixer & Launcher Pro
+# Roblox Fixer & Launcher Pro — executável nativo
 
-Aplicativo desktop para Windows, feito com Python e CustomTkinter, com tema claro/escuro automático. Ele oferece limpeza segura dos caches do Roblox, redefinição do XML gráfico, limpeza de DNS/redefinição de Winsock e abertura direta por ID.
+Aplicativo desktop nativo para Windows 10/11. **Não usa e não instala Python, Node.js, npm ou qualquer runtime externo.**
 
-## Executar o código
+## Baixar e executar
 
-Requer Python 3.10 ou mais recente no Windows.
+Baixe este arquivo diretamente:
 
-```powershell
-py -m pip install -r requirements.txt
-py roblox_fixer_launcher.py
-```
+[`release/Roblox-Fixer-Launcher-Pro.exe`](release/Roblox-Fixer-Launcher-Pro.exe)
 
-> A redefinição do Winsock exige privilégios elevados. Ao executar o script sem elevação, abra o PowerShell como administrador. O executável recomendado abaixo solicita a permissão automaticamente.
+Depois, dê dois cliques no `.exe`. O programa usa apenas componentes já incluídos no Windows.
 
-## Gerar o `.exe` sem ter Python ou Node.js instalado
+## Recursos
 
-No Windows, dê dois cliques em:
+- Visual moderno com modo claro/escuro automático do Windows.
+- Limpeza de caches, logs e temporários do Roblox.
+- Redefinição do arquivo `GlobalBasicSettings_13.xml`.
+- Limpeza do DNS e redefinição do Winsock sem abrir Prompt de Comando visível.
+- Launcher direto por ID numérico usando o protocolo `roblox-player:`.
+- Interface responsiva: reparos são executados em uma thread separada.
+- Binário de interface gráfica (`Windows GUI`), portanto não abre terminal.
 
-```text
-GERAR_EXECUTAVEL.bat
-```
+A otimização de rede abre somente a confirmação padrão do UAC, pois o Windows exige permissão administrativa para redefinir o Winsock.
 
-O gerador baixa o Python oficial e as dependências automaticamente, compila o programa e abre a pasta do executável ao terminar. É necessária uma conexão com a internet somente durante a geração.
+## Verificação do arquivo
 
-### Comando manual alternativo
-
-Se o Python já estiver instalado, execute no PowerShell:
-
-```powershell
-py -m PyInstaller --noconsole --onefile --uac-admin --clean --name "Roblox Fixer Launcher Pro" --collect-all customtkinter roblox_fixer_launcher.py
-```
-
-O resultado será criado em:
+SHA-256:
 
 ```text
-dist\Roblox Fixer Launcher Pro.exe
+f939186eb0677ec637b034a4d84234adb98c2d64a50881fa34d95a2f0f591c73
 ```
 
-- `--noconsole`: usa o modo *windowed* e impede a abertura do Prompt de Comando.
-- `--onefile`: empacota aplicação e dependências em um único `.exe`.
-- `--uac-admin`: solicita a permissão necessária para `netsh winsock reset`.
-- `--collect-all customtkinter`: inclui temas e recursos visuais do CustomTkinter.
+## Código-fonte nativo
 
-O computador de destino não precisa ter Python instalado. O executável deve ser compilado no Windows; um `.exe` não é gerado corretamente por uma compilação comum em Linux/macOS.
-
-## Segurança e comportamento
-
-- O ID do mapa aceita somente dígitos antes de ser enviado ao protocolo do Roblox.
-- Os comandos do sistema são executados em segundo plano com `CREATE_NO_WINDOW`.
-- A limpeza é limitada às pastas de cache, logs e temporários do Roblox; instalações e dados externos não são removidos.
-- O Roblox Player precisa estar instalado e associado ao protocolo `roblox-player:`.
+O código está em [`native/roblox_fixer_native.c`](native/roblox_fixer_native.c) e utiliza diretamente a API Win32. O executável incluído foi compilado para Windows x64 como subsistema `Windows GUI`.
