@@ -5,13 +5,16 @@
 #include <dwmapi.h>
 #include <tlhelp32.h>
 #include <urlmon.h>
+#include <wininet.h>
 #include <wintrust.h>
 #include <softpub.h>
 #include <stdio.h>
+#include <string.h>
 #include <wchar.h>
 
 #define APP_NAME L"Roblox Fixer & Launcher Pro"
 #define WM_TASK_DONE (WM_APP + 1)
+#define WM_TASK_STATUS (WM_APP + 2)
 #define ID_TAB_FIXES 100
 #define ID_TAB_LAUNCH 101
 #define ID_CACHE 200
@@ -147,18 +150,75 @@ static BOOL verify_authenticode(const wchar_t *path) {
 }
 
 static DWORD download_and_run_official_installer(void) {
-    wchar_t temp[MAX_PATH], installer[2 * MAX_PATH];
+    static const wchar_t *metadata_url =
+        L"https://clientsettingscdn.roblox.com/v2/client-version/WindowsPlayer/channel/LIVE";
+    wchar_t temp[MAX_PATH], metadata[2 * MAX_PATH], installer[2 * MAX_PATH];
+    wchar_t installer_url[512], version_wide[96];
+    char json[8192] = {0}, version[96] = {0};
     if (!GetTempPathW(MAX_PATH, temp)) return ERR_DOWNLOAD;
+    swprintf(metadata, 2 * MAX_PATH, L"%lsRoblox-versao-oficial.json", temp);
     swprintf(installer, 2 * MAX_PATH, L"%lsRobloxPlayerInstaller-oficial.exe", temp);
-    DeleteFileW(installer);
-    HRESULT downloaded = URLDownloadToFileW(NULL,
-        L"https://www.roblox.com/download/client?os=win", installer, 0, NULL);
-    if (FAILED(downloaded)) return ERR_DOWNLOAD;
-    if (!verify_authenticode(installer)) {
+    DeleteFileW(metadata); DeleteFileW(installer);
+    DeleteUrlCacheEntryW(metadata_url);
+    PostMessageW(g_window, WM_TASK_STATUS, 0, (LPARAM)L"Consultando a versão oficial...");
+
+    if (FAILED(URLDownloadToFileW(NULL, metadata_url, metadata, 0, NULL)))
+        return ERR_DOWNLOAD;
+    HANDLE file = CreateFileW(metadata, GENERIC_READ, FILE_SHARE_READ, NULL,
+                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) { DeleteFileW(metadata); return ERR_DOWNLOAD; }
+    DWORD read = 0;
+    ReadFile(file, json, sizeof(json) - 1, &read, NULL);
+    CloseHandle(file); DeleteFileW(metadata);
+
+    const char *key = "\"clientVersionUpload\":\"";
+    char *start = strstr(json, key);
+    if (!start) return ERR_DOWNLOAD;
+    start += strlen(key);
+    char *end = strchr(start, '"');
+    size_t length = end ? (size_t)(end - start) : 0;
+    if (length < 9 || length >= sizeof(version)) return ERR_DOWNLOAD;
+    for (size_t i = 0; i < length; ++i) {
+        char c = start[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'))
+            return ERR_DOWNLOAD;
+        version[i] = c;
+    }
+    version[length] = 0;
+    if (strncmp(version, "version-", 8) != 0) return ERR_DOWNLOAD;
+    MultiByteToWideChar(CP_UTF8, 0, version, -1, version_wide, 96);
+    swprintf(installer_url, 512,
+        L"https://setup.rbxcdn.com/%ls-RobloxPlayerInstaller.exe", version_wide);
+    DeleteUrlCacheEntryW(installer_url);
+    PostMessageW(g_window, WM_TASK_STATUS, 0, (LPARAM)L"Baixando o instalador oficial...");
+
+    if (FAILED(URLDownloadToFileW(NULL, installer_url, installer, 0, NULL)))
+        return ERR_DOWNLOAD;
+    file = CreateFileW(installer, GENERIC_READ, FILE_SHARE_READ, NULL,
+                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    BYTE header[2] = {0}; read = 0;
+    if (file != INVALID_HANDLE_VALUE) {
+        ReadFile(file, header, 2, &read, NULL); CloseHandle(file);
+    }
+    PostMessageW(g_window, WM_TASK_STATUS, 0, (LPARAM)L"Verificando a assinatura digital...");
+    if (read != 2 || header[0] != 'M' || header[1] != 'Z' ||
+        !verify_authenticode(installer)) {
         DeleteFileW(installer);
         return ERR_SIGNATURE;
     }
 
+    /* Só remove a instalação antiga depois de obter um instalador válido. */
+    PostMessageW(g_window, WM_TASK_STATUS, 0, (LPARAM)L"Removendo arquivos locais corrompidos...");
+    wchar_t local[MAX_PATH], roblox_temp[MAX_PATH], path[2 * MAX_PATH];
+    GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+    GetEnvironmentVariableW(L"TEMP", roblox_temp, MAX_PATH);
+    stop_roblox_processes();
+    swprintf(path, 2 * MAX_PATH, L"%ls\\Roblox", local);
+    clear_directory(path); RemoveDirectoryW(path);
+    swprintf(path, 2 * MAX_PATH, L"%ls\\Roblox", roblox_temp);
+    clear_directory(path); RemoveDirectoryW(path);
+
+    PostMessageW(g_window, WM_TASK_STATUS, 0, (LPARAM)L"Instalando a versão mais recente...");
     SHELLEXECUTEINFOW info = { sizeof(info) };
     info.fMask = SEE_MASK_NOCLOSEPROCESS;
     info.hwnd = g_window;
@@ -218,13 +278,6 @@ static DWORD WINAPI repair_worker(LPVOID parameter) {
     } else if (action == ID_NETWORK) {
         result = run_network_elevated();
     } else if (action == ID_REPAIR) {
-        stop_roblox_processes();
-        swprintf(path, 2 * MAX_PATH, L"%ls\\Roblox", local);
-        clear_directory(path);
-        RemoveDirectoryW(path);
-        swprintf(path, 2 * MAX_PATH, L"%ls\\Roblox", temp);
-        clear_directory(path);
-        RemoveDirectoryW(path);
         result = download_and_run_official_installer();
     }
     PostMessageW(g_window, WM_TASK_DONE, (WPARAM)result, (LPARAM)action);
@@ -303,6 +356,9 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
         } else if (id == ID_LAUNCH) launch_game();
         return 0;
     }
+    case WM_TASK_STATUS:
+        SetWindowTextW(g_status, (const wchar_t*)lparam);
+        return 0;
     case WM_TASK_DONE: {
         set_busy(FALSE);
         if ((DWORD)wparam == 0) {

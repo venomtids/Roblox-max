@@ -29,10 +29,12 @@ O botão **Reparar Tela Branca / Atualizar Roblox**:
 1. Pede confirmação antes de apagar qualquer dado local.
 2. Fecha apenas processos do Roblox Player.
 3. Remove arquivos locais corrompidos de `%LOCALAPPDATA%\Roblox` e `%TEMP%\Roblox`.
-4. Baixa o instalador exclusivamente de `roblox.com`.
-5. Valida a assinatura Authenticode do instalador com o Windows.
-6. Apaga o download e interrompe o reparo se a assinatura não for confiável.
-7. Executa o instalador oficial mais recente.
+4. Consulta a versão atual no serviço oficial `clientsettingscdn.roblox.com`.
+5. Baixa o executável correspondente diretamente de `setup.rbxcdn.com`.
+6. Confirma que o download é um executável PE e valida sua assinatura Authenticode.
+7. Apaga o download e interrompe o reparo se a assinatura não for confiável.
+8. Somente depois da validação remove a instalação corrompida e executa o instalador oficial.
+9. Mostra na interface cada etapa: consulta, download, assinatura, limpeza e instalação.
 
 A conta, os Robux, itens e o progresso dos jogos ficam nos servidores e não são apagados. Pode ser necessário entrar novamente na conta.
 
@@ -58,7 +60,7 @@ O executável deste projeto não possui certificado comercial de assinatura de c
 SHA-256:
 
 ```text
-2caf8acc4ec2ee25fcd7b4db63059101c62c44df67dbe94a17aeb8d82eef00f0
+0972f2f206c17f7b26618e2e63cf5cec4a66b386b1c30f089000758bc65c7e87
 ```
 
 ## Referências oficiais
