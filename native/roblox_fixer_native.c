@@ -3,6 +3,10 @@
 #include <commctrl.h>
 #include <shellapi.h>
 #include <dwmapi.h>
+#include <tlhelp32.h>
+#include <urlmon.h>
+#include <wintrust.h>
+#include <softpub.h>
 #include <stdio.h>
 #include <wchar.h>
 
@@ -13,12 +17,16 @@
 #define ID_CACHE 200
 #define ID_GRAPHICS 201
 #define ID_NETWORK 202
+#define ID_REPAIR 203
 #define ID_PLACE 300
 #define ID_LAUNCH 301
+#define ERR_DOWNLOAD 0xE001
+#define ERR_SIGNATURE 0xE002
+#define ERR_INSTALLER 0xE003
 
 static HWND g_window, g_status, g_progress, g_place;
-static HWND g_fix_controls[5], g_launch_controls[3];
-static HWND g_buttons[6];
+static HWND g_fix_controls[6], g_launch_controls[3];
+static HWND g_buttons[7];
 static HFONT g_font, g_font_bold, g_font_title;
 static HBRUSH g_bg_brush, g_edit_brush;
 static COLORREF g_bg, g_panel, g_text, g_muted, g_accent;
@@ -58,7 +66,7 @@ static HWND make_button(const wchar_t *text, int id, int x, int y, int w, int h)
 }
 
 static void show_section(BOOL fixes) {
-    for (int i = 0; i < 5; ++i) ShowWindow(g_fix_controls[i], fixes ? SW_SHOW : SW_HIDE);
+    for (int i = 0; i < 6; ++i) ShowWindow(g_fix_controls[i], fixes ? SW_SHOW : SW_HIDE);
     for (int i = 0; i < 3; ++i) ShowWindow(g_launch_controls[i], fixes ? SW_HIDE : SW_SHOW);
     SetWindowLongPtrW(g_window, GWLP_USERDATA, fixes ? 0 : 1);
     InvalidateRect(g_buttons[0], NULL, TRUE);
@@ -70,6 +78,7 @@ static void set_busy(BOOL busy) {
     EnableWindow(g_buttons[2], !busy);
     EnableWindow(g_buttons[3], !busy);
     EnableWindow(g_buttons[4], !busy);
+    EnableWindow(g_buttons[5], !busy);
     SendMessageW(g_progress, PBM_SETMARQUEE, busy, 25);
     SetWindowTextW(g_status, busy ? L"Corrigindo..." : L"Pronto");
 }
@@ -97,6 +106,75 @@ static BOOL clear_directory(const wchar_t *directory) {
     } while (FindNextFileW(search, &data));
     FindClose(search);
     return success;
+}
+
+static void stop_roblox_processes(void) {
+    const wchar_t *targets[] = { L"RobloxPlayerBeta.exe", L"RobloxCrashHandler.exe" };
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return;
+    PROCESSENTRY32W entry = { sizeof(entry) };
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            for (int i = 0; i < 2; ++i) {
+                if (_wcsicmp(entry.szExeFile, targets[i]) == 0) {
+                    HANDLE process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, entry.th32ProcessID);
+                    if (process) {
+                        TerminateProcess(process, 0);
+                        WaitForSingleObject(process, 3000);
+                        CloseHandle(process);
+                    }
+                }
+            }
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+}
+
+static BOOL verify_authenticode(const wchar_t *path) {
+    WINTRUST_FILE_INFO file = { sizeof(file) };
+    file.pcwszFilePath = path;
+    GUID policy = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    WINTRUST_DATA trust = { sizeof(trust) };
+    trust.dwUIChoice = WTD_UI_NONE;
+    trust.fdwRevocationChecks = WTD_REVOKE_NONE;
+    trust.dwUnionChoice = WTD_CHOICE_FILE;
+    trust.pFile = &file;
+    trust.dwStateAction = WTD_STATEACTION_VERIFY;
+    LONG status = WinVerifyTrust(NULL, &policy, &trust);
+    trust.dwStateAction = WTD_STATEACTION_CLOSE;
+    WinVerifyTrust(NULL, &policy, &trust);
+    return status == ERROR_SUCCESS;
+}
+
+static DWORD download_and_run_official_installer(void) {
+    wchar_t temp[MAX_PATH], installer[2 * MAX_PATH];
+    if (!GetTempPathW(MAX_PATH, temp)) return ERR_DOWNLOAD;
+    swprintf(installer, 2 * MAX_PATH, L"%lsRobloxPlayerInstaller-oficial.exe", temp);
+    DeleteFileW(installer);
+    HRESULT downloaded = URLDownloadToFileW(NULL,
+        L"https://www.roblox.com/download/client?os=win", installer, 0, NULL);
+    if (FAILED(downloaded)) return ERR_DOWNLOAD;
+    if (!verify_authenticode(installer)) {
+        DeleteFileW(installer);
+        return ERR_SIGNATURE;
+    }
+
+    SHELLEXECUTEINFOW info = { sizeof(info) };
+    info.fMask = SEE_MASK_NOCLOSEPROCESS;
+    info.hwnd = g_window;
+    info.lpVerb = L"open";
+    info.lpFile = installer;
+    info.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&info)) {
+        DeleteFileW(installer);
+        return ERR_INSTALLER;
+    }
+    WaitForSingleObject(info.hProcess, INFINITE);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(info.hProcess, &exit_code);
+    CloseHandle(info.hProcess);
+    DeleteFileW(installer);
+    return exit_code == 0 ? 0 : ERR_INSTALLER;
 }
 
 static DWORD run_network_elevated(void) {
@@ -139,6 +217,15 @@ static DWORD WINAPI repair_worker(LPVOID parameter) {
         result = (DeleteFileW(path) || GetLastError() == ERROR_FILE_NOT_FOUND) ? 0 : 1;
     } else if (action == ID_NETWORK) {
         result = run_network_elevated();
+    } else if (action == ID_REPAIR) {
+        stop_roblox_processes();
+        swprintf(path, 2 * MAX_PATH, L"%ls\\Roblox", local);
+        clear_directory(path);
+        RemoveDirectoryW(path);
+        swprintf(path, 2 * MAX_PATH, L"%ls\\Roblox", temp);
+        clear_directory(path);
+        RemoveDirectoryW(path);
+        result = download_and_run_official_installer();
     }
     PostMessageW(g_window, WM_TASK_DONE, (WPARAM)result, (LPARAM)action);
     return 0;
@@ -169,7 +256,8 @@ static void launch_game(void) {
             return;
         }
     }
-    swprintf(uri, 128, L"roblox-player:1+launchmode:play+gameinfo:%ls", id);
+    /* Deeplink universal oficial: abre o Player diretamente, sem Edge. */
+    swprintf(uri, 128, L"roblox://experiences/start?placeId=%ls", id);
     HINSTANCE result = ShellExecuteW(g_window, L"open", uri, NULL, NULL, SW_SHOWNORMAL);
     if ((INT_PTR)result <= 32) {
         MessageBoxW(g_window, L"Não foi possível abrir o Roblox Player. Confirme se ele está instalado.", APP_NAME, MB_ICONERROR);
@@ -185,7 +273,7 @@ static void draw_button(DRAWITEMSTRUCT *draw) {
     BOOL pressed = (draw->itemState & ODS_SELECTED) != 0;
     BOOL disabled = (draw->itemState & ODS_DISABLED) != 0;
     COLORREF color = (id == ID_LAUNCH) ? RGB(22, 163, 74) :
-                     ((selected || (id >= ID_CACHE && id <= ID_NETWORK)) ? g_accent : g_panel);
+                     ((selected || (id >= ID_CACHE && id <= ID_REPAIR)) ? g_accent : g_panel);
     if (pressed) color = RGB(GetRValue(color) * 4 / 5, GetGValue(color) * 4 / 5, GetBValue(color) * 4 / 5);
     if (disabled) color = g_panel;
     HBRUSH brush = CreateSolidBrush(color);
@@ -207,7 +295,12 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
         if (id == ID_TAB_FIXES) show_section(TRUE);
         else if (id == ID_TAB_LAUNCH) show_section(FALSE);
         else if (id >= ID_CACHE && id <= ID_NETWORK) start_repair(id);
-        else if (id == ID_LAUNCH) launch_game();
+        else if (id == ID_REPAIR) {
+            int answer = MessageBoxW(hwnd,
+                L"Esta correção fechará o Roblox, removerá os arquivos locais corrompidos e instalará a versão oficial mais recente. Sua conta e seu progresso online não serão apagados, mas talvez seja necessário entrar novamente.\n\nContinuar?",
+                APP_NAME, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+            if (answer == IDYES) start_repair(id);
+        } else if (id == ID_LAUNCH) launch_game();
         return 0;
     }
     case WM_TASK_DONE: {
@@ -216,12 +309,16 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
             SetWindowTextW(g_status, L"Sucesso!");
             const wchar_t *message = (lparam == ID_CACHE) ? L"Cache e temporários foram limpos." :
                 (lparam == ID_GRAPHICS) ? L"As configurações gráficas foram redefinidas." :
-                L"DNS e Winsock redefinidos. Reinicie o computador para concluir.";
+                (lparam == ID_NETWORK) ? L"DNS e Winsock redefinidos. Reinicie o computador para concluir." :
+                L"O Roblox foi reparado e atualizado com o instalador oficial. Tente abri-lo novamente.";
             MessageBoxW(hwnd, message, APP_NAME, MB_OK | MB_ICONINFORMATION);
         } else {
             SetWindowTextW(g_status, L"Falha na correção");
             const wchar_t *message = ((DWORD)wparam == ERROR_CANCELLED) ?
                 L"A permissão de administrador foi cancelada." :
+                ((DWORD)wparam == ERR_DOWNLOAD) ? L"Não foi possível baixar o instalador oficial. Verifique a internet, data/hora, firewall e tente novamente." :
+                ((DWORD)wparam == ERR_SIGNATURE) ? L"O instalador baixado não passou na verificação de assinatura digital e foi apagado por segurança." :
+                ((DWORD)wparam == ERR_INSTALLER) ? L"O instalador oficial não conseguiu concluir. Reinicie o Windows e tente novamente." :
                 L"A operação não foi concluída. Feche o Roblox e tente novamente.";
             MessageBoxW(hwnd, message, APP_NAME, MB_OK | MB_ICONERROR);
         }
@@ -268,7 +365,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     wc.hbrBackground = g_bg_brush; wc.lpszClassName = L"RobloxFixerNative";
     RegisterClassExW(&wc);
 
-    RECT rect = {0,0,540,500};
+    RECT rect = {0,0,600,580};
     AdjustWindowRect(&rect, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
     int width = rect.right - rect.left, height = rect.bottom - rect.top;
     int x = (GetSystemMetrics(SM_CXSCREEN) - width) / 2;
@@ -285,27 +382,28 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     g_font_title = CreateFontW(29,0,0,0,FW_BOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");
 
-    HWND title = make_static(APP_NAME, 28, 20, 484, 38, SS_CENTER); set_control_font(title, g_font_title);
-    HWND subtitle = make_static(L"Correções rápidas e acesso direto ao Roblox", 28, 58, 484, 24, SS_CENTER);
-    g_buttons[0] = make_button(L"Correções", ID_TAB_FIXES, 28, 94, 238, 40);
-    g_buttons[1] = make_button(L"Launcher Direto", ID_TAB_LAUNCH, 274, 94, 238, 40);
+    HWND title = make_static(APP_NAME, 30, 20, 540, 38, SS_CENTER); set_control_font(title, g_font_title);
+    HWND subtitle = make_static(L"Reparo seguro, atualização oficial e acesso direto", 30, 58, 540, 24, SS_CENTER);
+    g_buttons[0] = make_button(L"Correções", ID_TAB_FIXES, 30, 94, 265, 40);
+    g_buttons[1] = make_button(L"Launcher Direto", ID_TAB_LAUNCH, 305, 94, 265, 40);
 
-    g_buttons[2] = g_fix_controls[0] = make_button(L"Limpar Cache e Temporários", ID_CACHE, 46, 158, 448, 56);
-    g_buttons[3] = g_fix_controls[1] = make_button(L"Redefinir Configurações Gráficas (XML)", ID_GRAPHICS, 46, 227, 448, 56);
-    g_buttons[4] = g_fix_controls[2] = make_button(L"Otimizar Rede (DNS/Winsock)", ID_NETWORK, 46, 296, 448, 56);
-    g_fix_controls[3] = make_static(L"A otimização de rede solicitará permissão de administrador.", 46, 363, 448, 24, SS_CENTER);
-    g_fix_controls[4] = make_static(L"", 0, 0, 1, 1, 0);
+    g_buttons[2] = g_fix_controls[0] = make_button(L"Limpar Cache e Temporários", ID_CACHE, 50, 153, 500, 50);
+    g_buttons[3] = g_fix_controls[1] = make_button(L"Redefinir Configurações Gráficas (XML)", ID_GRAPHICS, 50, 214, 500, 50);
+    g_buttons[4] = g_fix_controls[2] = make_button(L"Otimizar Rede (DNS/Winsock)", ID_NETWORK, 50, 275, 500, 50);
+    g_buttons[5] = g_fix_controls[3] = make_button(L"Reparar Tela Branca / Atualizar Roblox", ID_REPAIR, 50, 336, 500, 54);
+    g_fix_controls[4] = make_static(L"Usa somente o instalador oficial e verifica a assinatura digital.", 50, 402, 500, 22, SS_CENTER);
+    g_fix_controls[5] = make_static(L"O Roblox será fechado durante o reparo completo.", 50, 427, 500, 22, SS_CENTER);
 
-    g_launch_controls[0] = make_static(L"Abra uma experiência sem passar pelo navegador", 46, 174, 448, 28, SS_CENTER);
+    g_launch_controls[0] = make_static(L"Abra uma experiência diretamente no Roblox Player, sem Edge", 50, 190, 500, 28, SS_CENTER);
     g_place = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_TABSTOP | ES_CENTER | ES_AUTOHSCROLL,
-        70, 224, 400, 48, g_window, (HMENU)ID_PLACE, instance, NULL);
+        80, 247, 440, 48, g_window, (HMENU)ID_PLACE, instance, NULL);
     set_control_font(g_place, g_font); SendMessageW(g_place, EM_SETCUEBANNER, TRUE, (LPARAM)L"Cole o ID do Jogo/Mapa aqui");
     g_launch_controls[1] = g_place;
-    g_buttons[5] = g_launch_controls[2] = make_button(L"Iniciar Jogo (Ignorar Navegador)", ID_LAUNCH, 70, 294, 400, 58);
+    g_buttons[6] = g_launch_controls[2] = make_button(L"Iniciar Jogo (Sem Navegador)", ID_LAUNCH, 80, 318, 440, 58);
 
-    g_status = make_static(L"Pronto", 32, 420, 476, 24, SS_LEFT);
+    g_status = make_static(L"Pronto", 36, 500, 528, 24, SS_LEFT);
     g_progress = CreateWindowExW(0, PROGRESS_CLASSW, NULL, WS_CHILD | WS_VISIBLE | PBS_MARQUEE,
-        32, 452, 476, 7, g_window, NULL, instance, NULL);
+        36, 532, 528, 7, g_window, NULL, instance, NULL);
     SendMessageW(g_progress, PBM_SETSTATE, PBST_NORMAL, 0);
     show_section(TRUE);
     ShowWindow(g_window, show); UpdateWindow(g_window);
