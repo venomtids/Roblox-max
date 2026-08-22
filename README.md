@@ -2,6 +2,14 @@
 
 Aplicativo nativo para Windows 10/11. **Não usa nem instala Python, Node.js, npm ou runtimes externos.**
 
+## Novo launcher em C# / .NET 8
+
+O código-fonte completo do launcher WinForms sem WebView está em:
+
+[`csharp/RobloxNativeLauncher`](csharp/RobloxNativeLauncher/README.md)
+
+Ele suporta Place ID e links oficiais de servidores privados, publica como um único EXE autocontido e não acessa o processo ou a memória do Roblox.
+
 ## Download
 
 Baixe diretamente:
