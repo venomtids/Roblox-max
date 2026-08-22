@@ -13,9 +13,19 @@ py roblox_fixer_launcher.py
 
 > A redefinição do Winsock exige privilégios elevados. Ao executar o script sem elevação, abra o PowerShell como administrador. O executável recomendado abaixo solicita a permissão automaticamente.
 
-## Gerar um único `.exe` sem console
+## Gerar o `.exe` sem ter Python ou Node.js instalado
 
-No PowerShell, dentro da pasta do projeto:
+No Windows, dê dois cliques em:
+
+```text
+GERAR_EXECUTAVEL.bat
+```
+
+O gerador baixa o Python oficial e as dependências automaticamente, compila o programa e abre a pasta do executável ao terminar. É necessária uma conexão com a internet somente durante a geração.
+
+### Comando manual alternativo
+
+Se o Python já estiver instalado, execute no PowerShell:
 
 ```powershell
 py -m PyInstaller --noconsole --onefile --uac-admin --clean --name "Roblox Fixer Launcher Pro" --collect-all customtkinter roblox_fixer_launcher.py
