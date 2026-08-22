@@ -1,6 +1,16 @@
-# Roblox Fixer & Launcher Pro — executável nativo
+# Roblox Fixer & Launcher Pro — executáveis nativos
 
-Aplicativo nativo para Windows 10/11. **Não usa nem instala Python, Node.js, npm ou runtimes externos.**
+Aplicativos nativos para Windows 10/11. **Não usam nem instalam Python, Node.js, npm, .NET, WebView ou runtimes externos.**
+
+## Launcher independente pronto
+
+Baixe o launcher leve, sem as ferramentas de reparo:
+
+[`release/Roblox-Native-Launcher.exe`](release/Roblox-Native-Launcher.exe)
+
+Código-fonte: [`native/roblox_launcher_native.c`](native/roblox_launcher_native.c).
+
+O launcher aceita Place ID e links oficiais de servidores privados, valida as entradas e entrega o protocolo `roblox:` ao Windows em modo *fire-and-forget*. Ele não interage com o processo nem com a memória do Roblox.
 
 ## Novo launcher em C# / .NET 8
 
