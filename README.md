@@ -2,9 +2,17 @@
 
 Aplicativos nativos para Windows 10/11. **Não usam nem instalam Python, Node.js, npm, .NET, WebView ou runtimes externos.**
 
-## Launcher independente pronto
+## Bootstrapper Advanced — recomendado
 
-Baixe o launcher leve, sem as ferramentas de reparo:
+Versão completa com layout moderno em tema escuro, launcher, diagnóstico de crashes, análise de logs, limpeza e reparo oficial:
+
+[`release/Roblox-Bootstrapper-Advanced.exe`](release/Roblox-Bootstrapper-Advanced.exe)
+
+Documentação e verificação: [`native/README_BOOTSTRAPPER_ADVANCED.md`](native/README_BOOTSTRAPPER_ADVANCED.md).
+
+## Launcher independente
+
+Baixe o launcher mínimo, sem as ferramentas de reparo:
 
 [`release/Roblox-Native-Launcher.exe`](release/Roblox-Native-Launcher.exe)
 
