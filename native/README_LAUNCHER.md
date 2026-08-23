@@ -17,7 +17,13 @@ Não requer Python, Node.js, .NET, WebView, WebView2, navegador ou instalação 
 - Nunca pede nem processa `.ROBLOSECURITY`.
 - Usa `ShellExecuteW` para entregar o protocolo `roblox:` ao Windows.
 - Não abre processo, não injeta código, não lê memória e não instala hooks.
-- Não mantém comunicação com o Roblox depois do disparo.
+- Por padrão, não mantém comunicação com o Roblox depois do disparo.
+- Oferece a opção desmarcada **“Reabrir se o Roblox fechar”**.
+- Quando ativada, verifica apenas se `RobloxPlayerBeta.exe` está em execução; não lê sua memória.
+- Faz no máximo três reaberturas e então se desativa para impedir loops.
+- Desmarcar a opção ou fechar o launcher interrompe imediatamente o monitoramento.
+
+A opção não impede o Windows ou o Roblox de encerrar o processo; ela apenas solicita uma nova abertura controlada pelo protocolo oficial. Falhas repetidas devem ser corrigidas no cliente, WebView2, driver gráfico ou instalação do Roblox.
 
 ## Compilação reproduzível
 
@@ -39,7 +45,7 @@ O subsistema é `Windows GUI`, portanto nenhuma janela de terminal é aberta.
 SHA-256:
 
 ```text
-69434e1815051cbc9d0c624ad018fc97305a175b110c7682f53a6723be96fdde
+717a0a983295efd7b55c6c3b981329a2aad388dc36072b92550cc2d19f92a64c
 ```
 
 O binário não possui certificado comercial de assinatura de código. O hash e o fonte permitem verificar exatamente o arquivo disponibilizado.

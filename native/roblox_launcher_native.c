@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <dwmapi.h>
+#include <tlhelp32.h>
 #include <wchar.h>
 #include <wctype.h>
 
@@ -9,8 +10,15 @@
 #define ID_PLACE 101
 #define ID_PRIVATE 102
 #define ID_LAUNCH 103
+#define ID_KEEP_OPEN 104
+#define WATCHDOG_TIMER 1
+#define MAX_AUTOMATIC_RESTARTS 3
 
-static HWND g_window, g_place, g_private, g_status, g_log, g_launch;
+static HWND g_window, g_place, g_private, g_status, g_log, g_launch, g_keep_open;
+static wchar_t g_last_uri[1400];
+static BOOL g_tracking = FALSE, g_seen_roblox = FALSE;
+static ULONGLONG g_last_launch_time = 0;
+static int g_restart_count = 0;
 static HFONT g_font, g_bold, g_title;
 static HBRUSH g_background_brush, g_input_brush;
 static COLORREF g_background, g_surface, g_text, g_muted, g_primary;
@@ -132,6 +140,69 @@ static void set_status(const wchar_t *text) {
     SetWindowTextW(g_status, text);
 }
 
+static BOOL roblox_is_running(void) {
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return FALSE;
+    PROCESSENTRY32W entry = { sizeof(entry) };
+    BOOL found = FALSE;
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            if (_wcsicmp(entry.szExeFile, L"RobloxPlayerBeta.exe") == 0) {
+                found = TRUE;
+                break;
+            }
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+    return found;
+}
+
+static BOOL dispatch_uri(const wchar_t *uri) {
+    HINSTANCE result = ShellExecuteW(g_window, L"open", uri, NULL, NULL, SW_SHOWNORMAL);
+    if ((INT_PTR)result <= 32) return FALSE;
+    g_last_launch_time = GetTickCount64();
+    return TRUE;
+}
+
+static void disable_watchdog(const wchar_t *reason) {
+    SendMessageW(g_keep_open, BM_SETCHECK, BST_UNCHECKED, 0);
+    g_tracking = FALSE;
+    g_seen_roblox = FALSE;
+    set_status(L"Reabertura automática desativada");
+    append_log(reason);
+}
+
+static void monitor_roblox(void) {
+    if (!g_tracking || SendMessageW(g_keep_open, BM_GETCHECK, 0, 0) != BST_CHECKED || !g_last_uri[0])
+        return;
+
+    BOOL running = roblox_is_running();
+    if (running) {
+        if (!g_seen_roblox) append_log(L"Roblox detectado. Monitoramento opcional ativo.");
+        g_seen_roblox = TRUE;
+        return;
+    }
+
+    ULONGLONG now = GetTickCount64();
+    /* Aguarda a inicialização lenta para não abrir instâncias duplicadas. */
+    if (!g_seen_roblox && now - g_last_launch_time < 15000) return;
+    if (g_restart_count >= MAX_AUTOMATIC_RESTARTS) {
+        disable_watchdog(L"Proteção contra loop: limite de 3 reaberturas atingido. Opção desligada.");
+        MessageBoxW(g_window,
+            L"O Roblox fechou repetidamente. A reabertura automática foi desativada para evitar um loop e consumo excessivo. Use o reparador e verifique os logs do Roblox.",
+            APP_TITLE, MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    ++g_restart_count;
+    g_seen_roblox = FALSE;
+    set_status(L"Roblox fechou; reabrindo...");
+    append_log(L"Roblox não está em execução. Fazendo uma tentativa controlada.");
+    if (!dispatch_uri(g_last_uri)) {
+        disable_watchdog(L"O protocolo roblox: falhou durante a reabertura.");
+    }
+}
+
 static void launch_roblox(void) {
     wchar_t place[64], private_link[1024], code[160], type[64], uri[1400];
     GetWindowTextW(g_place, place, 64);
@@ -185,8 +256,7 @@ static void launch_roblox(void) {
     }
 
     set_status(L"Iniciando Roblox...");
-    HINSTANCE result = ShellExecuteW(g_window, L"open", uri, NULL, NULL, SW_SHOWNORMAL);
-    if ((INT_PTR)result <= 32) {
+    if (!dispatch_uri(uri)) {
         set_status(L"Roblox Player não encontrado");
         append_log(L"O protocolo roblox: não está registrado.");
         MessageBoxW(g_window,
@@ -194,8 +264,16 @@ static void launch_roblox(void) {
             APP_TITLE, MB_OK | MB_ICONERROR);
         return;
     }
-    set_status(L"Comando enviado ao Roblox");
-    append_log(L"Protocolo entregue ao Windows. Fire-and-forget concluído.");
+
+    wcsncpy(g_last_uri, uri, 1399);
+    g_last_uri[1399] = 0;
+    g_seen_roblox = FALSE;
+    g_restart_count = 0;
+    g_tracking = SendMessageW(g_keep_open, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    set_status(g_tracking ? L"Comando enviado; monitoramento ativo" : L"Comando enviado ao Roblox");
+    append_log(g_tracking
+        ? L"Protocolo entregue. Reabertura opcional ativada; desmarque para parar."
+        : L"Protocolo entregue ao Windows. Fire-and-forget concluído.");
 }
 
 static void draw_launch_button(DRAWITEMSTRUCT *draw) {
@@ -221,7 +299,27 @@ static void draw_launch_button(DRAWITEMSTRUCT *draw) {
 static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     switch (message) {
     case WM_COMMAND:
-        if (LOWORD(wparam) == ID_LAUNCH) launch_roblox();
+        if (LOWORD(wparam) == ID_LAUNCH) {
+            launch_roblox();
+        } else if (LOWORD(wparam) == ID_KEEP_OPEN && HIWORD(wparam) == BN_CLICKED) {
+            BOOL enabled = SendMessageW(g_keep_open, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            if (!enabled) {
+                g_tracking = FALSE;
+                g_seen_roblox = FALSE;
+                append_log(L"Reabertura automática desativada pelo usuário.");
+            } else {
+                append_log(L"Reabertura automática ativada. Fechar o launcher sempre a desativa.");
+                if (g_last_uri[0]) {
+                    g_tracking = TRUE;
+                    g_seen_roblox = roblox_is_running();
+                    g_last_launch_time = GetTickCount64();
+                    g_restart_count = 0;
+                }
+            }
+        }
+        return 0;
+    case WM_TIMER:
+        if (wparam == WATCHDOG_TIMER) monitor_roblox();
         return 0;
     case WM_DRAWITEM:
         if ((UINT)wparam == ID_LAUNCH) {
@@ -241,6 +339,13 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
         SetBkColor(dc, g_surface);
         return (LRESULT)g_input_brush;
     }
+    case WM_CTLCOLORBTN: {
+        HDC dc = (HDC)wparam;
+        SetTextColor(dc, g_text);
+        SetBkColor(dc, g_background);
+        SetBkMode(dc, TRANSPARENT);
+        return (LRESULT)g_background_brush;
+    }
     case WM_ERASEBKGND: {
         RECT rect;
         GetClientRect(hwnd, &rect);
@@ -248,6 +353,8 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
         return 1;
     }
     case WM_DESTROY:
+        KillTimer(hwnd, WATCHDOG_TIMER);
+        g_tracking = FALSE;
         DeleteObject(g_font); DeleteObject(g_bold); DeleteObject(g_title);
         DeleteObject(g_background_brush); DeleteObject(g_input_brush);
         PostQuitMessage(0);
@@ -305,21 +412,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     g_private = create_input(L"https://www.roblox.com/share?code=...&type=Server",
                              ID_PRIVATE, 50, 234, 500, 43);
     HWND warning = create_label(L"Segurança: nunca cole .ROBLOSECURITY, cookies ou senhas.",
-                                50, 292, 500, 28, SS_CENTER, g_font);
+                                50, 284, 500, 25, SS_CENTER, g_font);
     (void)warning;
+
+    g_keep_open = CreateWindowExW(0, L"BUTTON",
+        L"Reabrir se o Roblox fechar (opcional; máximo de 3 tentativas)",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        50, 312, 500, 25, g_window, (HMENU)ID_KEEP_OPEN, instance, NULL);
+    set_font(g_keep_open, g_font);
+    SendMessageW(g_keep_open, BM_SETCHECK, BST_UNCHECKED, 0);
 
     g_launch = CreateWindowExW(0, L"BUTTON", L"Iniciar Roblox",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-        50, 337, 500, 58, g_window, (HMENU)ID_LAUNCH, instance, NULL);
+        50, 349, 500, 54, g_window, (HMENU)ID_LAUNCH, instance, NULL);
     set_font(g_launch, g_bold);
-    rounded_region(g_launch, 500, 58, 14);
+    rounded_region(g_launch, 500, 54, 14);
 
-    g_status = create_label(L"Pronto", 50, 411, 500, 24, SS_LEFT, g_bold);
+    g_status = create_label(L"Pronto", 50, 415, 500, 24, SS_LEFT, g_bold);
     g_log = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT",
         L"[--:--:--] Pronto. Nenhum WebView ou navegador foi carregado.\r\n",
         WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL,
-        50, 441, 500, 59, g_window, NULL, instance, NULL);
+        50, 443, 500, 57, g_window, NULL, instance, NULL);
     set_font(g_log, g_font);
+    SetTimer(g_window, WATCHDOG_TIMER, 2000, NULL);
 
     ShowWindow(g_window, show);
     UpdateWindow(g_window);

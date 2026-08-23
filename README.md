@@ -10,7 +10,7 @@ Baixe o launcher leve, sem as ferramentas de reparo:
 
 Código-fonte: [`native/roblox_launcher_native.c`](native/roblox_launcher_native.c).
 
-O launcher aceita Place ID e links oficiais de servidores privados, valida as entradas e entrega o protocolo `roblox:` ao Windows em modo *fire-and-forget*. Ele não interage com o processo nem com a memória do Roblox.
+O launcher aceita Place ID e links oficiais de servidores privados, valida as entradas e entrega o protocolo `roblox:` ao Windows em modo *fire-and-forget*. Opcionalmente, pode verificar apenas a presença do processo e solicitar até três reaberturas caso ele feche. A opção vem desativada, pode ser desmarcada a qualquer momento e nunca lê a memória do Roblox.
 
 ## Novo launcher em C# / .NET 8
 
