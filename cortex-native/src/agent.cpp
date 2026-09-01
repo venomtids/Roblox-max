@@ -36,6 +36,7 @@ std::vector<MemoryHit> CognitiveAgent::recall(std::string_view query,
 
 std::vector<TokenId> CognitiveAgent::bounded_context(
     std::string_view prompt,
+    std::string_view conversation_context,
     std::span<const MemoryHit> hits,
     std::size_t maximum_tokens) const {
     if (maximum_tokens < 8U) {
@@ -52,6 +53,12 @@ std::vector<TokenId> CognitiveAgent::bounded_context(
             const std::string excerpt = hit.text.substr(0U, maximum_excerpt);
             context << "- " << excerpt << '\n';
         }
+    }
+    if (!conversation_context.empty()) {
+        // O cliente envia somente as mensagens recentes; o limite final continua em tokens.
+        constexpr std::size_t maximum_recent_bytes = 16U * 1024U;
+        context << "Conversa recente:\n"
+                << conversation_context.substr(0U, maximum_recent_bytes) << '\n';
     }
     context << "Usuário: " << prompt << "\nAssistente: ";
 
@@ -71,7 +78,8 @@ std::vector<TokenId> CognitiveAgent::bounded_context(
 }
 
 AgentReply CognitiveAgent::respond(std::string_view prompt,
-                                   const AgentOptions& options) {
+                                   const AgentOptions& options,
+                                   std::string_view conversation_context) {
     if (prompt.empty()) {
         throw Error("o prompt do agente não pode estar vazio");
     }
@@ -80,7 +88,7 @@ AgentReply CognitiveAgent::respond(std::string_view prompt,
     const std::vector<MemoryHit> hits = recall(prompt, options.memory_hits,
                                                options.minimum_memory_score);
     const std::vector<TokenId> context = bounded_context(
-        prompt, hits, options.maximum_context_tokens);
+        prompt, conversation_context, hits, options.maximum_context_tokens);
     std::vector<TokenId> generated = model_.generate(context, options.generation);
     std::string answer = tokenizer_.decode(generated);
 

@@ -3,6 +3,7 @@
 #include "cortex/memory.hpp"
 #include "cortex/neural_model.hpp"
 #include "cortex/tokenizer.hpp"
+#include "cortex/web_server.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -224,6 +225,7 @@ Uso:
   cortex recall   --query "consulta" [--state DIR] [--limit 5]
   cortex forget   --id N [--state DIR]
   cortex chat     [--state DIR] [opções]
+  cortex serve    [--state DIR] [--host 0.0.0.0] [--port 8080]
   cortex inspect  [--state DIR]
   cortex benchmark [--state DIR] [--steps 1000]
 
@@ -235,10 +237,14 @@ Geração/agente:
   --tokens 96 --top-k 24 --temperature 0.8 --repetition 1.08 --seed N
   --memory-hits 3 --memory-score 0.10 --context 512 --no-remember
 
+Interface web nativa:
+  --host 0.0.0.0 --port 8080 --workers 4
+
 Exemplo rápido:
   make release
   ./build/cortex train --corpus data/corpus.pt.txt --state state --epochs 8
-  ./build/cortex ask --state state --prompt "O que é memória de longo prazo?"
+  ./build/cortex serve --state state --host 0.0.0.0 --port 8080
+  # abra http://localhost:8080 e converse no navegador
 )HELP";
 }
 
@@ -412,6 +418,22 @@ void command_chat(const Arguments& arguments) {
     }
 }
 
+void command_serve(const Arguments& arguments) {
+    const StatePaths paths = state_paths(arguments);
+    Runtime runtime = load_runtime(paths);
+    cortex::WebServerOptions options;
+    options.bind_address = arguments.get("host", options.bind_address);
+    const std::size_t port = arguments.size_value("port", options.port);
+    if (port == 0U || port > 65'535U) {
+        throw Error("--port deve estar entre 1 e 65535");
+    }
+    options.port = static_cast<std::uint16_t>(port);
+    options.worker_count = arguments.size_value("workers", options.worker_count);
+    options.memory_path = paths.memory;
+    options.agent = agent_options(arguments);
+    cortex::run_web_chat_server(runtime.tokenizer, runtime.model, runtime.memory, options);
+}
+
 void command_inspect(const Arguments& arguments) {
     const StatePaths paths = state_paths(arguments);
     Runtime runtime = load_runtime(paths);
@@ -480,6 +502,8 @@ int main(int argc, char** argv) {
             command_forget(arguments);
         } else if (command == "chat") {
             command_chat(arguments);
+        } else if (command == "serve") {
+            command_serve(arguments);
         } else if (command == "inspect") {
             command_inspect(arguments);
         } else if (command == "benchmark") {

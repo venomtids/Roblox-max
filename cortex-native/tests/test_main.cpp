@@ -2,6 +2,7 @@
 #include "cortex/memory.hpp"
 #include "cortex/neural_model.hpp"
 #include "cortex/tokenizer.hpp"
+#include "cortex/web_server.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -124,6 +125,15 @@ void test_neural_training_and_checkpoint(const fs::path& directory) {
     expect(first == second, "amostragem com mesma semente é determinística");
 }
 
+void test_embedded_web_interface() {
+    const std::string_view html = cortex::web_chat_html();
+    expect(html.starts_with("<!doctype html>"), "interface web possui documento HTML completo");
+    expect(html.find("/api/chat") != std::string_view::npos,
+           "interface web conversa com endpoint relativo nativo");
+    expect(html.find("Node.js") != std::string_view::npos,
+           "interface informa ausência de runtime Node.js");
+}
+
 void test_long_term_memory(const fs::path& directory) {
     cortex::LongTermMemory memory(3U);
     const std::uint64_t alpha = memory.remember("alfa", std::vector<float>{1.0F, 0.0F, 0.0F});
@@ -155,6 +165,7 @@ int main() {
         test_matrix();
         test_tokenizer(directory);
         test_neural_training_and_checkpoint(directory);
+        test_embedded_web_interface();
         test_long_term_memory(directory);
         fs::remove_all(directory);
         std::cout << "OK — " << passed << " verificações passaram.\n";

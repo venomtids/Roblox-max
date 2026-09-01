@@ -1,6 +1,6 @@
 # Cortex Native AI
 
-Motor de linguagem neural e agente cognitivo **100% C++20**, criado do zero e sem Python, Node.js, JavaScript, TypeScript, npm, bibliotecas de deep learning ou serviços externos. O projeto compila para um único executável nativo; a biblioteca padrão de C++ é a única dependência de código.
+Motor de linguagem neural e agente cognitivo **100% C++20**, criado do zero e sem Python, Node.js, npm, bibliotecas de deep learning ou serviços externos. O projeto compila para um único executável nativo; a biblioteca padrão de C++ é a única dependência de código. A interface de conversa é servida pelo próprio executável e usa somente HTML/CSS e JavaScript de navegador embutidos — não existe runtime, pacote ou build Node.js.
 
 > O código implementa um motor completo e treinável. A qualidade linguística do checkpoint depende do corpus, das dimensões e do tempo de treino. O corpus pequeno em `data/` demonstra todo o pipeline, mas não pretende ter o conhecimento de um LLM pré-treinado em bilhões de tokens.
 
@@ -63,6 +63,20 @@ O `CognitiveAgent` executa um ciclo RAG local:
 4. gera a resposta no modelo neural;
 5. opcionalmente consolida pergunta e resposta como um novo episódio.
 
+### D. Interface de conversa no navegador
+
+O comando `serve` inicia um servidor HTTP/1.1 escrito com sockets nativos em C++, ligado por padrão a `0.0.0.0:8080`. Ele entrega uma interface responsiva de chat, mantém as últimas mensagens no contexto curto e usa a memória vetorial para lembranças de longo prazo. HTML, CSS e JavaScript de navegador estão incorporados em `web_ui.cpp`; não há CDN, npm, Node.js ou arquivos web para instalar.
+
+Endpoints locais:
+
+- `GET /` — interface completa de conversa;
+- `GET /api/status` — dimensões do modelo e quantidade de memórias;
+- `POST /api/chat` — inferência, recuperação e consolidação;
+- `POST /api/remember` — armazenamento explícito de um episódio;
+- `GET /health` — health check simples.
+
+O parser HTTP limita cabeçalhos/corpos, exige `Content-Length`, rejeita transfer encoding e valida o JSON sem biblioteca externa. Um pool separado atende conexões para não bloquear o pool matemático. A resposta inclui CSP, `nosniff`, conteúdo UTF-8 sanitizado e nunca habilita CORS para origens externas.
+
 ### Por que C++ supera Python/Node neste caminho crítico
 
 Neste cenário específico, C++20 oferece matrizes row-major contíguas, controle explícito das alocações, autovetorização/SIMD pelo compilador, threads nativas e ausência de interpretador/JIT/garbage collector no hot path. Isso reduz overhead e torna a latência mais previsível. Python pode orquestrar kernels nativos, mas foi deliberadamente excluído; aqui até tokenização, gradientes e persistência são nativos e inspecionáveis.
@@ -80,14 +94,17 @@ cortex-native/
 │   ├── core.hpp                      matriz, parâmetros, pool, PRNG e I/O
 │   ├── memory.hpp                    contrato do vector store persistente
 │   ├── neural_model.hpp              GRU, treino, inferência e geração
-│   └── tokenizer.hpp                 BPE byte-level
+│   ├── tokenizer.hpp                 BPE byte-level
+│   └── web_server.hpp                contrato da interface HTTP nativa
 ├── src/
 │   ├── agent.cpp                     recuperação + contexto + consolidação
 │   ├── core.cpp                      álgebra e infraestrutura nativa
 │   ├── main.cpp                      CLI e validação de argumentos
 │   ├── memory.cpp                    cosseno paralelo e serialização
 │   ├── neural_model.cpp              forward, BPTT, Adam e sampling
-│   └── tokenizer.cpp                 treino/encode/decode BPE
+│   ├── tokenizer.cpp                 treino/encode/decode BPE
+│   ├── web_server.cpp                sockets, HTTP, JSON e API de chat
+│   └── web_ui.cpp                    interface responsiva embutida
 └── tests/
     └── test_main.cpp                 25 verificações determinísticas
 ```
@@ -109,8 +126,10 @@ Compilação direta, caso `make` não esteja disponível:
 ```bash
 g++ -Iinclude -std=c++20 -O3 -DNDEBUG -march=native -flto -pthread \
   src/core.cpp src/tokenizer.cpp src/neural_model.cpp src/memory.cpp \
-  src/agent.cpp src/main.cpp -o cortex
+  src/agent.cpp src/web_server.cpp src/web_ui.cpp src/main.cpp -o cortex
 ```
+
+No MinGW/Windows, acrescente `-lws2_32`; o `Makefile` detecta o Windows e faz isso automaticamente.
 
 Para depurar memória e comportamento indefinido:
 
@@ -144,9 +163,19 @@ state/memory.cmem      episódios de longo prazo
 
 Um novo treinamento reinicia a memória porque os novos pesos definem outro espaço vetorial. Isso impede comparar embeddings produzidos por versões incompatíveis do modelo.
 
-## 5. Inferência e agente
+## 5. Conversar com a IA
 
-Geração neural direta:
+Depois de treinar, inicie a interface:
+
+```bash
+./build/cortex serve --state state --host 0.0.0.0 --port 8080
+```
+
+Abra [http://localhost:8080](http://localhost:8080). A página permite conversar, iniciar uma nova conversa, ajustar temperatura/top-k/comprimento e ativar ou desativar a consolidação automática na memória. As dez mensagens mais recentes formam o contexto curto no navegador; episódios relevantes são recuperados da memória persistente pelo servidor.
+
+Não execute esse comando diretamente na internet sem colocar autenticação, TLS, rate limiting e um proxy reverso à frente. O servidor embutido foi projetado para uso local, rede confiável e integração em desenvolvimento.
+
+Geração neural direta pela CLI:
 
 ```bash
 ./build/cortex generate --state state \
@@ -189,7 +218,8 @@ Inspeção e benchmark:
 - **Buffers contíguos:** `Matrix` e todos os parâmetros usam `std::vector<float>` row-major.
 - **Sem alocação por peso:** gradiente e momentos Adam são reservados uma vez por parâmetro.
 - **SIMD amigável:** os produtos escalares são loops simples sobre memória contígua, otimizáveis por `-O3 -march=native`.
-- **Pool persistente:** threads auxiliares vivem por todo o processo; produtos grandes e busca vetorial usam `parallel_for`.
+- **Pool matemático persistente:** threads auxiliares vivem por todo o processo; produtos grandes e busca vetorial usam `parallel_for`.
+- **Pool HTTP independente:** conexões web não bloqueiam o pool matemático e uma fila limitada aplica backpressure.
 - **Chamador participa:** uma fatia de cada trabalho roda na thread solicitante, reduzindo espera e melhorando utilização.
 - **BPTT truncado:** limita memória proporcionalmente a `sequence_length`, não ao corpus inteiro.
 - **Move semantics:** caches, estados e resultados grandes são movidos em vez de copiados quando deixam uma etapa.
@@ -204,7 +234,9 @@ O carregamento verifica magic/version, dimensões máximas, formas e nomes dos p
 - reversibilidade UTF-8 e persistência BPE;
 - redução real de loss por BPTT/Adam;
 - checkpoint bit a bit e amostragem determinística;
-- ranking, persistência e remoção da memória vetorial.
+- ranking, persistência e remoção da memória vetorial;
+- presença e endpoints relativos da interface web embutida;
+- smoke tests HTTP para página, status, health, chat, memória e JSON inválido.
 
 ## 8. Escala e evolução
 
@@ -217,4 +249,4 @@ A arquitetura é funcional, modular e adequada para experimentação nativa. Par
 - adicione autenticação e limites antes de expor uma API de rede;
 - meça qualidade, perplexidade, latência p50/p95/p99 e consumo de memória no hardware alvo.
 
-Nenhuma API HTTP foi incluída de propósito: a CLI mantém o núcleo sem superfície de rede e sem framework adicional. `CognitiveAgent` é uma classe independente e pode ser ligado diretamente a Crow/Drogon ou a outro servidor C++ nativo caso uma API seja necessária.
+A API HTTP embutida é intencionalmente pequena e sem dependências. Para exposição pública, mantenha `CognitiveAgent` como núcleo e coloque a aplicação atrás de um gateway autenticado ou substitua a camada de sockets por Crow/Drogon, preservando tokenizador, modelo e memória.

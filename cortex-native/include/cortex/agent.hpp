@@ -38,13 +38,16 @@ public:
                                                 std::size_t limit = 5U,
                                                 float minimum_score = -1.0F) const;
     [[nodiscard]] AgentReply respond(std::string_view prompt,
-                                     const AgentOptions& options = {});
+                                     const AgentOptions& options = {},
+                                     std::string_view conversation_context = {});
 
 private:
     [[nodiscard]] std::vector<float> embed_text(std::string_view text) const;
-    [[nodiscard]] std::vector<TokenId> bounded_context(std::string_view prompt,
-                                                        std::span<const MemoryHit> hits,
-                                                        std::size_t maximum_tokens) const;
+    [[nodiscard]] std::vector<TokenId> bounded_context(
+        std::string_view prompt,
+        std::string_view conversation_context,
+        std::span<const MemoryHit> hits,
+        std::size_t maximum_tokens) const;
 
     const BpeTokenizer& tokenizer_;
     const NeuralLanguageModel& model_;
