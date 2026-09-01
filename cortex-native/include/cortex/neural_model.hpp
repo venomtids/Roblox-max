@@ -13,16 +13,17 @@ namespace cortex {
 // Dimensões serializadas junto aos pesos; limites são validados antes de alocar.
 struct ModelConfig final {
     std::size_t vocabulary_size = 0U;
-    std::size_t embedding_size = 64U;
-    std::size_t hidden_size = 128U;
+    // Com 160 merges BPE (vocabulário ≈420), esta configuração tem ≈1,0 M parâmetros.
+    std::size_t embedding_size = 256U;
+    std::size_t hidden_size = 256U;
     std::size_t layer_count = 2U;
     std::uint64_t seed = 0xA17E'2026ULL;
 };
 
 struct TrainingOptions final {
-    std::size_t epochs = 30U;
+    std::size_t epochs = 25U;
     std::size_t sequence_length = 64U;
-    float learning_rate = 0.003F;
+    float learning_rate = 0.0025F;
     float gradient_clip = 1.0F;
     float beta1 = 0.9F;
     float beta2 = 0.999F;

@@ -1,6 +1,6 @@
 # Cortex Native AI
 
-Motor de linguagem neural e agente cognitivo **100% C++20**, criado do zero e sem Python, Node.js, npm, bibliotecas de deep learning ou serviços externos. O projeto compila para um único executável nativo; a biblioteca padrão de C++ é a única dependência de código. A interface de conversa é servida pelo próprio executável e usa somente HTML/CSS e JavaScript de navegador embutidos — não existe runtime, pacote ou build Node.js.
+Motor de linguagem neural e agente cognitivo **100% C++20**, criado do zero e sem Python, Node.js, npm ou bibliotecas de deep learning. O núcleo compila para um único executável nativo. A interface usa HTML/CSS e JavaScript de navegador embutidos — não existe runtime ou build Node.js. A conectividade HTTPS opcional chama apenas o `curl` nativo do sistema (incluído no Windows 10/11 atual e comum em Linux); sem ele, modelo e memória continuam funcionando offline.
 
 > O código implementa um motor completo e treinável. A qualidade linguística do checkpoint depende do corpus, das dimensões e do tempo de treino. O corpus pequeno em `data/` demonstra todo o pipeline, mas não pretende ter o conhecimento de um LLM pré-treinado em bilhões de tokens.
 
@@ -76,9 +76,29 @@ Endpoints locais:
 - `GET /api/status` — dimensões do modelo e quantidade de memórias;
 - `POST /api/chat` — inferência, recuperação e consolidação;
 - `POST /api/remember` — armazenamento explícito de um episódio;
+- `POST /api/code/propose` — proposta revisável de mudança em um fonte;
+- `POST /api/code/apply` — aplicação confirmada com backup;
 - `GET /health` — health check simples.
 
 O parser HTTP limita cabeçalhos/corpos, exige `Content-Length`, rejeita transfer encoding e valida o JSON sem biblioteca externa. Um pool separado atende conexões para não bloquear o pool matemático. A resposta inclui CSP, `nosniff`, conteúdo UTF-8 sanitizado e nunca habilita CORS para origens externas.
+
+### E. API de linguagem e internet
+
+`LanguageApiClient` fala com qualquer endpoint compatível com OpenAI `POST /v1/chat/completions`: OpenAI, Groq, servidores llama.cpp locais e equivalentes. A chave vem exclusivamente de variável de ambiente. Quando a API está ativa, ela recebe conversa recente, memórias e contexto web e produz a resposta final; em timeout/erro, o agente volta automaticamente ao GRU local.
+
+`InternetSearch` consulta por HTTPS a API Instant Answer do DuckDuckGo quando o usuário ativa **Pesquisar na internet**. Um resultado objetivo pode responder diretamente ou enriquecer a API linguística. A URL é fixa, respostas têm limite e HTTP remoto sem TLS é rejeitado. Isso não é um navegador irrestrito e reduz a superfície de SSRF.
+
+### F. Autoevolução controlada
+
+O sistema pode propor e aplicar mudanças ao próprio fonte, mas **não recebe permissão irrestrita**. Com `--enable-self-edit`, a interface libera um laboratório em duas etapas:
+
+1. uma API linguística recebe um único arquivo permitido e devolve sua substituição completa;
+2. a pessoa revisa todo o conteúdo e digita `APLICAR ID`;
+3. o servidor verifica caminho, extensão, symlinks e hash contra alterações concorrentes;
+4. cria backup em `.cortex-backups/` e publica por escrita atômica;
+5. a mudança só entra no processo depois de `make test`, recompilação e reinício.
+
+Arquivos fora de `src/`, `include/`, `tests/` e `data/`, caminhos relativos, scripts e executáveis são bloqueados. Autoedição deve ser habilitada somente em `127.0.0.1` ou em rede confiável.
 
 ### Por que C++ supera Python/Node neste caminho crítico
 
@@ -94,22 +114,26 @@ cortex-native/
 │   └── corpus.pt.txt                 corpus demonstrativo em português
 ├── include/cortex/
 │   ├── agent.hpp                     contrato do ciclo cognitivo
+│   ├── connectivity.hpp              HTTPS, API linguística e busca web
 │   ├── core.hpp                      matriz, parâmetros, pool, PRNG e I/O
 │   ├── memory.hpp                    contrato do vector store persistente
 │   ├── neural_model.hpp              GRU, treino, inferência e geração
+│   ├── self_editor.hpp               autoedição com revisão humana
 │   ├── tokenizer.hpp                 BPE byte-level
 │   └── web_server.hpp                contrato da interface HTTP nativa
 ├── src/
 │   ├── agent.cpp                     recuperação + contexto + consolidação
+│   ├── connectivity.cpp              curl nativo e protocolos externos
 │   ├── core.cpp                      álgebra e infraestrutura nativa
 │   ├── main.cpp                      CLI e validação de argumentos
 │   ├── memory.cpp                    cosseno paralelo e serialização
 │   ├── neural_model.cpp              forward, BPTT, Adam e sampling
+│   ├── self_editor.cpp               proposta, hash, backup e aplicação
 │   ├── tokenizer.cpp                 treino/encode/decode BPE
 │   ├── web_server.cpp                sockets, HTTP, JSON e API de chat
 │   └── web_ui.cpp                    interface responsiva embutida
 └── tests/
-    └── test_main.cpp                 32 verificações determinísticas
+    └── test_main.cpp                 38 verificações determinísticas
 ```
 
 Os arquivos principais possuem comentários junto a cada bloco algorítmico e às linhas onde as equações são aplicadas. Operações triviais não são escondidas por macros ou frameworks; o fluxo matemático pode ser acompanhado diretamente no fonte.
@@ -129,7 +153,8 @@ Compilação direta, caso `make` não esteja disponível:
 ```bash
 g++ -Iinclude -std=c++20 -O3 -DNDEBUG -march=native -flto -pthread \
   src/core.cpp src/tokenizer.cpp src/neural_model.cpp src/memory.cpp \
-  src/agent.cpp src/web_server.cpp src/web_ui.cpp src/main.cpp -o cortex
+  src/agent.cpp src/connectivity.cpp src/self_editor.cpp src/web_server.cpp \
+  src/web_ui.cpp src/main.cpp -o cortex
 ```
 
 No MinGW/Windows, acrescente `-lws2_32`; o `Makefile` detecta o Windows e faz isso automaticamente.
@@ -147,16 +172,16 @@ make debug
 ./build/cortex train \
   --corpus data/corpus.pt.txt \
   --state state \
-  --merges 128 \
-  --embedding 64 \
-  --hidden 128 \
+  --merges 160 \
+  --embedding 256 \
+  --hidden 256 \
   --layers 2 \
-  --epochs 30 \
+  --epochs 25 \
   --sequence 64 \
-  --learning-rate 0.003
+  --learning-rate 0.0025
 ```
 
-Os 30 ciclos padrão são deliberados: com apenas poucas épocas o pipeline já funciona, mas o modelo demonstrativo ainda produz fragmentos em vez de respostas estáveis. Para uso real, acompanhe a loss em validação e treine com um corpus muito maior.
+Com o corpus incluído, essa configuração cria **1.003.428 parâmetros treináveis**. As 25 épocas padrão são deliberadas: com poucas épocas o pipeline funciona, mas ainda produz fragmentos. Um milhão de parâmetros melhora a capacidade local, porém continua muito abaixo de um LLM comercial; a API linguística abaixo é a opção para respostas gerais de alta qualidade.
 
 Arquivos produzidos:
 
@@ -179,6 +204,48 @@ Depois de treinar, inicie a interface:
 Abra [http://localhost:8080](http://localhost:8080). A página permite conversar, iniciar uma nova conversa, ajustar temperatura/top-k/comprimento e ativar ou desativar a consolidação automática na memória. As dez mensagens mais recentes formam o contexto curto no navegador; episódios relevantes são recuperados da memória persistente pelo servidor.
 
 Não execute esse comando diretamente na internet sem colocar autenticação, TLS, rate limiting e um proxy reverso à frente. O servidor embutido foi projetado para uso local, rede confiável e integração em desenvolvimento.
+
+### Ativar respostas por API de linguagem
+
+A chave não entra em argumento, navegador, arquivo ou Git. Defina-a no ambiente e informe um endpoint OpenAI-compatible:
+
+```bash
+export CORTEX_LLM_API_KEY="SUA_CHAVE_NO_SEU_TERMINAL"
+./build/cortex serve --state state --host 0.0.0.0 --port 8080 \
+  --llm-url https://api.openai.com/v1/chat/completions \
+  --llm-model SEU_MODELO
+```
+
+PowerShell:
+
+```powershell
+$env:CORTEX_LLM_API_KEY = "SUA_CHAVE_NO_SEU_TERMINAL"
+.\build\cortex.exe serve --state state `
+  --llm-url https://api.openai.com/v1/chat/completions `
+  --llm-model SEU_MODELO
+```
+
+Também é possível usar Groq ou um servidor `llama.cpp` nativo local:
+
+```bash
+./build/cortex serve --state state \
+  --llm-url http://127.0.0.1:8081/v1/chat/completions \
+  --llm-model modelo-local
+```
+
+Se a API cair, expirar ou exceder o timeout, a resposta volta ao modelo GRU local e a interface mostra o aviso. O botão **Pesquisar na internet** é independente e usa DuckDuckGo; desative toda conectividade com `--no-internet`.
+
+### Habilitar autoevolução controlada
+
+Use apenas localmente e com o repositório sob controle de versão:
+
+```bash
+./build/cortex serve --state state --host 127.0.0.1 --port 8080 \
+  --llm-url URL_OPENAI_COMPATIVEL --llm-model MODELO \
+  --enable-self-edit --source-root .
+```
+
+O botão **Autoevolução controlada** aparecerá. A API nunca aplica uma proposta sozinha: revisão e confirmação `APLICAR ID` são obrigatórias. Em seguida execute `make test && make release` e reinicie. Backups ficam em `.cortex-backups/` e não entram no Git.
 
 Geração neural direta pela CLI:
 
@@ -240,8 +307,11 @@ O carregamento verifica magic/version, dimensões máximas, formas e nomes dos p
 - redução real de loss por BPTT/Adam;
 - checkpoint bit a bit e amostragem determinística;
 - ranking, persistência e remoção da memória vetorial;
-- presença e endpoints relativos da interface web embutida;
-- smoke tests HTTP para página, status, health, chat, memória e JSON inválido.
+- configuração neural próxima de um milhão de parâmetros;
+- percent-encoding, JSON Unicode e bloqueio de HTTP remoto sem TLS;
+- presença dos controles de API, internet e autoedição na interface;
+- smoke tests HTTP para página, status, fallback local e API linguística mock;
+- fluxo de proposta, confirmação, backup e aplicação em uma árvore temporária.
 
 ## 8. Escala e evolução
 

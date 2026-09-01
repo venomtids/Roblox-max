@@ -1,6 +1,7 @@
 #include "cortex/web_server.hpp"
 
 #include "cortex/core.hpp"
+#include "cortex/self_editor.hpp"
 
 #include <algorithm>
 #include <array>
@@ -245,6 +246,9 @@ void configure_client_socket(NativeSocket socket) {
         data.append(buffer.data(), static_cast<std::size_t>(received));
     }
 
+    if (header_end > maximum_header_bytes) {
+        throw HttpFailure(431, "cabeçalhos HTTP excedem 16 KiB");
+    }
     const std::string_view header_block(data.data(), header_end);
     const std::size_t first_line_end = header_block.find("\r\n");
     const std::string_view request_line = first_line_end == std::string_view::npos
@@ -802,7 +806,17 @@ public:
                const NeuralLanguageModel& model,
                LongTermMemory& memory,
                WebServerOptions options)
-        : tokenizer_(tokenizer), model_(model), memory_(memory), options_(std::move(options)) {}
+        : tokenizer_(tokenizer),
+          model_(model),
+          memory_(memory),
+          options_(std::move(options)),
+          language_api_(options_.language_api),
+          internet_(),
+          self_editor_(options_.source_root, language_api_, options_.self_edit_enabled) {}
+
+    [[nodiscard]] bool language_api_configured() const noexcept {
+        return language_api_.configured();
+    }
 
     [[nodiscard]] HttpResponse route(const HttpRequest& request) {
         if (request.method == "GET" && request.target == "/") {
@@ -832,8 +846,17 @@ public:
             require_json_content_type(request);
             return remember_response(request.body);
         }
+        if (request.method == "POST" && request.target == "/api/code/propose") {
+            require_json_content_type(request);
+            return code_proposal_response(request.body);
+        }
+        if (request.method == "POST" && request.target == "/api/code/apply") {
+            require_json_content_type(request);
+            return code_apply_response(request.body);
+        }
         if (request.target == "/api/chat" || request.target == "/api/remember"
-            || request.target == "/api/status") {
+            || request.target == "/api/status" || request.target == "/api/code/propose"
+            || request.target == "/api/code/apply") {
             return json_error_response(405, "método HTTP não permitido para este endpoint");
         }
         return json_error_response(404, "endpoint não encontrado");
@@ -852,7 +875,14 @@ private:
              << ",\"hidden\":" << model_.config().hidden_size
              << ",\"layers\":" << model_.config().layer_count
              << ",\"parameters\":" << model_.parameter_count()
-             << ",\"memories\":" << memory_.size() << '}';
+             << ",\"memories\":" << memory_.size()
+             << ",\"language_api\":" << (language_api_.configured() ? "true" : "false")
+             << ",\"language_model\":"
+             << json_escape(language_api_.configured() ? language_api_.config().model : "local")
+             << ",\"internet\":" << (options_.internet_enabled ? "true" : "false")
+             << ",\"self_edit\":"
+             << (self_editor_.enabled() && language_api_.configured() ? "true" : "false")
+             << '}';
         return HttpResponse{200, "application/json; charset=utf-8", body.str(), {}};
     }
 
@@ -895,31 +925,155 @@ private:
         agent_options.generation.seed += request_sequence_.fetch_add(1U,
                                                                      std::memory_order_relaxed);
 
+        const bool request_language_api = optional_json_bool(object, "language_api", true);
+        const bool request_internet = optional_json_bool(object, "internet", false)
+                                      && options_.internet_enabled;
         CognitiveAgent agent(tokenizer_, model_, memory_);
         const auto started = std::chrono::steady_clock::now();
-        AgentReply reply = agent.respond(message, agent_options, conversation);
-        if (reply.stored_memory_id != 0U && !options_.memory_path.empty()) {
+        std::vector<MemoryHit> recalled = agent.recall(
+            message, agent_options.memory_hits, agent_options.minimum_memory_score);
+        InternetResult internet_result;
+        std::string warning;
+        if (request_internet) {
+            try {
+                internet_result = internet_.search(message);
+            } catch (const std::exception& exception) {
+                warning = "internet indisponível: " + std::string(exception.what());
+            }
+        }
+
+        std::string answer;
+        std::string provider = "local-gru";
+        std::string provider_model = "GRU " + std::to_string(model_.config().layer_count)
+                                     + "x" + std::to_string(model_.config().hidden_size);
+        std::size_t generated_tokens = 0U;
+        std::uint64_t stored_memory_id = 0U;
+
+        if (request_language_api && language_api_.configured()) {
+            try {
+                std::ostringstream enriched;
+                if (!conversation.empty()) {
+                    enriched << "CONVERSA RECENTE:\n" << conversation << "\n\n";
+                }
+                if (!recalled.empty()) {
+                    enriched << "MEMÓRIAS RELEVANTES:\n";
+                    for (const MemoryHit& hit : recalled) {
+                        enriched << "- " << hit.text.substr(0U, 1'024U) << '\n';
+                    }
+                    enriched << '\n';
+                }
+                if (!internet_result.empty()) {
+                    enriched << "INFORMAÇÃO RECENTE DA INTERNET:\n"
+                             << internet_result.heading << " — " << internet_result.summary;
+                    if (!internet_result.source_url.empty()) {
+                        enriched << "\nFonte: " << internet_result.source_url;
+                    }
+                    enriched << "\n\n";
+                }
+                enriched << "PERGUNTA ATUAL:\n" << message;
+                const std::string system =
+                    "Você é Cortex. Responda em português claro, diretamente à pergunta atual, "
+                    "sem inventar fatos. Use a conversa, memórias e informação da internet somente "
+                    "quando forem relevantes. Se não souber, diga isso de forma curta.";
+                LanguageCompletion completion = language_api_.complete(
+                    system, enriched.str(), agent_options.generation.temperature,
+                    agent_options.generation.maximum_tokens);
+                answer = sanitize_utf8(completion.text);
+                const auto response_whitespace = [](char character) {
+                    return character == ' ' || character == '\t' || character == '\r'
+                           || character == '\n';
+                };
+                while (!answer.empty() && response_whitespace(answer.front())) answer.erase(0U, 1U);
+                while (!answer.empty() && response_whitespace(answer.back())) answer.pop_back();
+                if (answer.empty()) throw Error("API de linguagem devolveu texto vazio");
+                provider = "language-api";
+                provider_model = completion.model;
+            } catch (const std::exception& exception) {
+                if (!warning.empty()) warning += "; ";
+                warning += "API de linguagem falhou, usando modelo local: ";
+                warning += exception.what();
+            }
+        }
+
+        // Sem uma API linguística, um resultado web objetivo ainda é melhor que inventar.
+        if (answer.empty() && request_internet && !internet_result.empty()) {
+            answer = internet_result.summary;
+            if (!internet_result.source_url.empty()) answer += "\n\nFonte: " + internet_result.source_url;
+            provider = "internet";
+            provider_model = "DuckDuckGo Instant Answer";
+        }
+
+        if (answer.empty()) {
+            AgentReply local = agent.respond(message, agent_options, conversation);
+            answer = std::move(local.text);
+            generated_tokens = local.generated_tokens.size();
+            stored_memory_id = local.stored_memory_id;
+            recalled = std::move(local.recalled_memories);
+        } else if (agent_options.remember_interaction) {
+            stored_memory_id = agent.remember(
+                "Usuário: " + message + "\nAssistente: " + answer);
+        }
+
+        if (stored_memory_id != 0U && !options_.memory_path.empty()) {
             memory_.save(options_.memory_path);
         }
         const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started).count();
 
         std::ostringstream body;
-        body << "{\"ok\":true,\"reply\":" << json_escape(reply.text)
-             << ",\"generated_tokens\":" << reply.generated_tokens.size()
-             << ",\"memory_id\":" << reply.stored_memory_id
+        body << "{\"ok\":true,\"reply\":" << json_escape(answer)
+             << ",\"provider\":" << json_escape(provider)
+             << ",\"provider_model\":" << json_escape(provider_model)
+             << ",\"generated_tokens\":" << generated_tokens
+             << ",\"memory_id\":" << stored_memory_id
              << ",\"latency_ms\":" << elapsed_ms
+             << ",\"internet_source\":" << json_escape(internet_result.source_url)
+             << ",\"warning\":" << json_escape(warning)
              << ",\"recalled\":[";
-        for (std::size_t index = 0U; index < reply.recalled_memories.size(); ++index) {
-            if (index != 0U) {
-                body << ',';
-            }
-            const MemoryHit& hit = reply.recalled_memories[index];
+        for (std::size_t index = 0U; index < recalled.size(); ++index) {
+            if (index != 0U) body << ',';
+            const MemoryHit& hit = recalled[index];
             body << "{\"id\":" << hit.id << ",\"score\":"
                  << std::setprecision(7) << hit.score << ",\"text\":"
                  << json_escape(hit.text.substr(0U, 1'024U)) << '}';
         }
         body << "]}";
+        return HttpResponse{200, "application/json; charset=utf-8", body.str(), {}};
+    }
+
+    [[nodiscard]] HttpResponse code_proposal_response(std::string_view encoded) {
+        if (!self_editor_.enabled()) {
+            throw HttpFailure(422, "autoedição desativada; reinicie com --enable-self-edit");
+        }
+        const JsonObject object = JsonParser(encoded).parse_object();
+        const std::string file = required_json_string(object, "file");
+        const std::string instruction = required_json_string(object, "instruction");
+        CodeProposal proposal = self_editor_.propose(file, instruction);
+        std::ostringstream body;
+        body << "{\"ok\":true,\"proposal_id\":" << proposal.id
+             << ",\"file\":" << json_escape(proposal.relative_path)
+             << ",\"replacement\":" << json_escape(proposal.replacement)
+             << ",\"confirmation\":" << json_escape("APLICAR " + std::to_string(proposal.id))
+             << '}';
+        return HttpResponse{200, "application/json; charset=utf-8", body.str(), {}};
+    }
+
+    [[nodiscard]] HttpResponse code_apply_response(std::string_view encoded) {
+        if (!self_editor_.enabled()) {
+            throw HttpFailure(422, "autoedição desativada; reinicie com --enable-self-edit");
+        }
+        const JsonObject object = JsonParser(encoded).parse_object();
+        const std::size_t proposal_id = bounded_integer(
+            optional_json_number(object, "proposal_id", 0.0), 1U,
+            static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()), "proposal_id");
+        const std::string confirmation = required_json_string(object, "confirmation");
+        AppliedCodeChange applied = self_editor_.apply(
+            static_cast<std::uint64_t>(proposal_id), confirmation);
+        std::ostringstream body;
+        body << "{\"ok\":true,\"proposal_id\":" << applied.proposal_id
+             << ",\"changed_file\":" << json_escape(applied.changed_file.string())
+             << ",\"backup_file\":" << json_escape(applied.backup_file.string())
+             << ",\"restart_required\":true}";
         return HttpResponse{200, "application/json; charset=utf-8", body.str(), {}};
     }
 
@@ -945,6 +1099,9 @@ private:
     const NeuralLanguageModel& model_;
     LongTermMemory& memory_;
     WebServerOptions options_;
+    LanguageApiClient language_api_;
+    InternetSearch internet_;
+    SafeSelfEditor self_editor_;
     std::atomic<std::uint64_t> request_sequence_{1U};
 };
 
@@ -986,6 +1143,9 @@ void run_web_chat_server(const BpeTokenizer& tokenizer,
     if (options.maximum_request_bytes < 1'024U
         || options.maximum_request_bytes > 1024U * 1024U) {
         throw Error("maximum_request_bytes deve estar entre 1 KiB e 1 MiB");
+    }
+    if (options.self_edit_enabled && options.bind_address != "127.0.0.1") {
+        throw Error("autoedição só pode ser vinculada a 127.0.0.1");
     }
 
     SocketEnvironment environment;
@@ -1047,7 +1207,10 @@ void run_web_chat_server(const BpeTokenizer& tokenizer,
     std::cout << "Interface Cortex disponível em http://" << options.bind_address
               << ':' << options.port << "\n"
               << "Workers HTTP: " << options.worker_count
-              << " | estado neural carregado | Ctrl+C para encerrar\n" << std::flush;
+              << " | API linguística: "
+              << (runtime.language_api_configured() ? "ativa" : "fallback local")
+              << " | internet: " << (options.internet_enabled ? "habilitada" : "desabilitada")
+              << " | Ctrl+C para encerrar\n" << std::flush;
 
     try {
         while (true) {

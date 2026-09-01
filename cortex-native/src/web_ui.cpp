@@ -111,6 +111,16 @@ std::string_view web_chat_html() noexcept {
     .new-chat:hover { border-color: rgba(139,124,255,.7); background: rgba(139,124,255,.2); transform: translateY(-1px); }
     .new-chat svg { width: 17px; }
 
+    .self-edit-button {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      width: 100%; min-height: 38px; margin-top: 12px; border: 1px solid var(--line);
+      border-radius: 10px; color: #b9c2d2; background: rgba(255,255,255,.02);
+      font-size: 11px; cursor: pointer;
+    }
+    .self-edit-button:hover { border-color: rgba(83,212,220,.35); color: #b9f1f4; }
+    .self-edit-button svg { width: 15px; }
+    .self-edit-button[hidden] { display: none; }
+
     .section-label {
       margin: 24px 9px 10px;
       color: var(--muted-2);
@@ -277,6 +287,36 @@ std::string_view web_chat_html() noexcept {
     .send svg { width: 17px; }
     .composer-note { margin-top: 9px; color: var(--muted-2); text-align: center; font-size: 9px; }
 
+    .editor-overlay {
+      position: fixed; z-index: 80; inset: 0; display: none; place-items: center;
+      padding: 18px; background: rgba(3,5,10,.78); backdrop-filter: blur(8px);
+    }
+    .editor-overlay.open { display: grid; }
+    .editor-modal {
+      width: min(780px, 100%); max-height: min(800px, 92vh); overflow: auto;
+      padding: 22px; border: 1px solid var(--line-strong); border-radius: 18px;
+      background: #111621; box-shadow: var(--shadow);
+    }
+    .editor-head { display: flex; justify-content: space-between; gap: 14px; align-items: start; }
+    .editor-head h2 { margin: 0; font-size: 17px; }
+    .editor-head p { margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+    .close-editor { width: 32px; height: 32px; border: 1px solid var(--line); border-radius: 9px; background: transparent; cursor: pointer; }
+    .editor-field { display: block; margin-top: 16px; color: var(--muted); font-size: 11px; }
+    .editor-field input, .editor-field textarea {
+      display: block; width: 100%; margin-top: 7px; padding: 10px 11px;
+      border: 1px solid var(--line); border-radius: 9px; outline: 0;
+      color: var(--text); background: #0b0f17; font-size: 12px;
+    }
+    .editor-field textarea { min-height: 82px; max-height: 150px; resize: vertical; }
+    .editor-field input:focus, .editor-field textarea:focus { border-color: rgba(139,124,255,.5); }
+    .editor-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 15px; }
+    .editor-action { min-height: 37px; padding: 0 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-3); cursor: pointer; font-size: 11px; }
+    .editor-action.primary { border-color: rgba(139,124,255,.4); background: var(--violet-2); color: white; }
+    .editor-action:disabled { opacity: .4; cursor: wait; }
+    .code-preview { display: none; max-height: 280px; overflow: auto; margin: 15px 0 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; color: #b8c2d4; background: #090d14; font: 10px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre; }
+    .code-preview.visible { display: block; }
+    .editor-warning { margin-top: 13px; color: #e6b875; font-size: 10px; line-height: 1.5; }
+
     .toast { position: fixed; z-index: 60; right: 20px; bottom: 20px; max-width: 330px; padding: 12px 15px; border: 1px solid rgba(255,113,136,.25); border-radius: 11px; color: #ffdce2; background: rgba(58,24,32,.96); box-shadow: var(--shadow); font-size: 11px; opacity: 0; transform: translateY(10px); pointer-events: none; transition: .25s; }
     .toast.show { opacity: 1; transform: translateY(0); }
     .backdrop { display: none; }
@@ -346,10 +386,23 @@ std::string_view web_chat_html() noexcept {
           <select id="maxTokens" aria-label="Máximo de tokens"><option>64</option><option selected>96</option><option>128</option><option>192</option></select>
         </div>
         <div class="toggle-line">
+          <span>API de linguagem</span>
+          <label class="switch"><input id="languageApi" type="checkbox" checked><span></span></label>
+        </div>
+        <div class="toggle-line">
+          <span>Pesquisar na internet</span>
+          <label class="switch"><input id="internet" type="checkbox"><span></span></label>
+        </div>
+        <div class="toggle-line">
           <span>Memória automática</span>
           <label class="switch"><input id="remember" type="checkbox" checked><span></span></label>
         </div>
       </details>
+
+      <button class="self-edit-button" id="openSelfEditor" type="button" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m14.7 6.3 3 3M5 19l3.8-.8L19 7a2.1 2.1 0 0 0-3-3L4.8 14.2 4 18Z"/><path d="M12 20h8"/></svg>
+        Autoevolução controlada
+      </button>
 
       <div class="sidebar-spacer"></div>
       <div class="runtime-card">
@@ -390,6 +443,30 @@ std::string_view web_chat_html() noexcept {
     </main>
   </div>
 
+  <div class="editor-overlay" id="editorOverlay" role="dialog" aria-modal="true" aria-labelledby="editorTitle">
+    <div class="editor-modal">
+      <div class="editor-head">
+        <div><h2 id="editorTitle">Autoevolução controlada</h2><p>A API propõe a substituição de um arquivo. Nada é aplicado sem você revisar e confirmar.</p></div>
+        <button class="close-editor" id="closeEditor" type="button" aria-label="Fechar">×</button>
+      </div>
+      <label class="editor-field">Arquivo permitido
+        <input id="editFile" value="src/agent.cpp" maxlength="512" spellcheck="false">
+      </label>
+      <label class="editor-field">Mudança desejada
+        <textarea id="editInstruction" maxlength="4096" placeholder="Ex.: melhore o tratamento de perguntas curtas sem alterar as APIs públicas"></textarea>
+      </label>
+      <div class="editor-actions"><button class="editor-action primary" id="proposeCode" type="button">Gerar proposta</button></div>
+      <pre class="code-preview" id="codePreview"></pre>
+      <div id="applyArea" hidden>
+        <div class="editor-warning">Revise todo o conteúdo. A aplicação cria backup, mas exige recompilar e reiniciar. Digite a confirmação exibida abaixo.</div>
+        <label class="editor-field">Confirmação
+          <input id="editConfirmation" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="editor-actions"><button class="editor-action primary" id="applyCode" type="button">Aplicar alteração</button></div>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast" role="alert"></div>
 
   <script>
@@ -409,6 +486,7 @@ std::string_view web_chat_html() noexcept {
     let busy = false;
     let history = [];
     let toastTimer = 0;
+    let currentProposal = 0;
 
     const suggestions = [
       ["Explique a arquitetura", "Como BPE, GRU e memória trabalham juntos?"],
@@ -484,7 +562,7 @@ std::string_view web_chat_html() noexcept {
       if (persist) {
         history.push({role, text, meta});
         history = history.slice(-40);
-        localStorage.setItem("cortex-chat-history-v2", JSON.stringify(history));
+        localStorage.setItem("cortex-chat-history-v3", JSON.stringify(history));
       }
       requestAnimationFrame(() => { scrollArea.scrollTop = scrollArea.scrollHeight; });
       return article;
@@ -524,9 +602,13 @@ std::string_view web_chat_html() noexcept {
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.error || "núcleo indisponível");
         byId("statusDot").classList.add("online");
-        byId("runtimeStatus").textContent = "Núcleo online";
+        byId("runtimeStatus").textContent = data.language_api ? "API linguística online" : "Núcleo local online";
         byId("runtimeDetail").textContent = `${data.parameters.toLocaleString("pt-BR")} parâmetros · ${data.memories} memórias`;
-        byId("modelLabel").textContent = `GRU ${data.layers}×${data.hidden}`;
+        byId("modelLabel").textContent = data.language_api ? data.language_model : `GRU ${data.layers}×${data.hidden}`;
+        byId("languageApi").disabled = !data.language_api;
+        if (!data.language_api) byId("languageApi").checked = false;
+        byId("internet").disabled = !data.internet;
+        byId("openSelfEditor").hidden = !data.self_edit;
       } catch (error) {
         byId("statusDot").classList.remove("online");
         byId("runtimeStatus").textContent = "Núcleo offline";
@@ -560,6 +642,8 @@ std::string_view web_chat_html() noexcept {
             temperature: Number(temperature.value),
             top_k: Number(byId("topK").value),
             max_tokens: Number(byId("maxTokens").value),
+            language_api: byId("languageApi").checked,
+            internet: byId("internet").checked,
             remember: byId("remember").checked
           })
         });
@@ -567,8 +651,11 @@ std::string_view web_chat_html() noexcept {
         if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
         thinking.remove();
         const recalled = Array.isArray(data.recalled) ? data.recalled.length : 0;
-        const meta = `${data.generated_tokens} tokens${recalled ? ` · ${recalled} memória${recalled > 1 ? "s" : ""} recuperada${recalled > 1 ? "s" : ""}` : ""}`;
+        const provider = data.provider === "language-api" ? `API · ${data.provider_model}`
+          : data.provider === "internet" ? "Internet" : "Modelo local";
+        const meta = `${provider} · ${data.latency_ms} ms${recalled ? ` · ${recalled} memória${recalled > 1 ? "s" : ""}` : ""}`;
         appendMessage("assistant", data.reply || "O modelo encerrou a geração sem produzir texto.", meta);
+        if (data.warning) showToast(data.warning);
         refreshStatus();
       } catch (error) {
         thinking.remove();
@@ -580,10 +667,72 @@ std::string_view web_chat_html() noexcept {
       }
     }
 
+    function openCodeEditor() {
+      byId("editorOverlay").classList.add("open");
+      byId("editInstruction").focus();
+    }
+
+    function closeCodeEditor() {
+      byId("editorOverlay").classList.remove("open");
+    }
+
+    async function proposeCodeChange() {
+      const file = byId("editFile").value.trim();
+      const instruction = byId("editInstruction").value.trim();
+      if (!file || !instruction) return showToast("Informe o arquivo e a mudança desejada.");
+      const button = byId("proposeCode");
+      button.disabled = true;
+      button.textContent = "Gerando…";
+      try {
+        const response = await fetch("/api/code/propose", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({file, instruction})
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        currentProposal = data.proposal_id;
+        byId("codePreview").textContent = data.replacement;
+        byId("codePreview").classList.add("visible");
+        byId("editConfirmation").placeholder = data.confirmation;
+        byId("editConfirmation").value = "";
+        byId("applyArea").hidden = false;
+      } catch (error) {
+        showToast(String(error.message || error));
+      } finally {
+        button.disabled = false;
+        button.textContent = "Gerar proposta";
+      }
+    }
+
+    async function applyCodeChange() {
+      if (!currentProposal) return;
+      const button = byId("applyCode");
+      button.disabled = true;
+      try {
+        const response = await fetch("/api/code/apply", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            proposal_id: currentProposal,
+            confirmation: byId("editConfirmation").value.trim()
+          })
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        showToast("Fonte alterado com backup. Execute make test e reinicie para ativar.");
+        currentProposal = 0;
+        byId("applyArea").hidden = true;
+        closeCodeEditor();
+      } catch (error) {
+        showToast(String(error.message || error));
+      } finally {
+        button.disabled = false;
+      }
+    }
+
     function clearConversation() {
       if (busy) return;
       history = [];
-      localStorage.removeItem("cortex-chat-history-v2");
+      localStorage.removeItem("cortex-chat-history-v3");
       conversationTitle.textContent = "Nova conversa";
       welcome();
       prompt.focus();
@@ -605,9 +754,16 @@ std::string_view web_chat_html() noexcept {
     byId("newChat").addEventListener("click", clearConversation);
     byId("mobileMenu").addEventListener("click", openSidebar);
     backdrop.addEventListener("click", closeSidebar);
+    byId("openSelfEditor").addEventListener("click", openCodeEditor);
+    byId("closeEditor").addEventListener("click", closeCodeEditor);
+    byId("proposeCode").addEventListener("click", proposeCodeChange);
+    byId("applyCode").addEventListener("click", applyCodeChange);
+    byId("editorOverlay").addEventListener("click", (event) => {
+      if (event.target === byId("editorOverlay")) closeCodeEditor();
+    });
 
     try {
-      const saved = JSON.parse(localStorage.getItem("cortex-chat-history-v2") || "[]");
+      const saved = JSON.parse(localStorage.getItem("cortex-chat-history-v3") || "[]");
       if (Array.isArray(saved) && saved.length) {
         history = [];
         messages.replaceChildren();

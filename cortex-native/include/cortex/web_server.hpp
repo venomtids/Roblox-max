@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cortex/agent.hpp"
+#include "cortex/connectivity.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -17,6 +18,10 @@ struct WebServerOptions final {
     std::size_t maximum_request_bytes = 64U * 1024U;
     std::filesystem::path memory_path;
     AgentOptions agent;
+    LanguageApiConfig language_api;
+    bool internet_enabled = true;
+    bool self_edit_enabled = false;
+    std::filesystem::path source_root = ".";
 };
 
 // HTML/CSS/JavaScript são embutidos no binário; não existe Node.js nem build web.

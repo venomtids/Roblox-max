@@ -15,6 +15,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -133,6 +134,12 @@ struct StatePaths final {
     fs::path memory;
 };
 
+[[nodiscard]] std::string environment_value(const char* name,
+                                             std::string fallback = {}) {
+    const char* value = std::getenv(name);
+    return value != nullptr && *value != '\0' ? std::string(value) : std::move(fallback);
+}
+
 [[nodiscard]] StatePaths state_paths(const Arguments& arguments) {
     const fs::path directory = arguments.get("state", "state");
     return StatePaths{
@@ -230,15 +237,17 @@ Uso:
   cortex benchmark [--state DIR] [--steps 1000]
 
 Treinamento:
-  --merges 128 --min-frequency 2 --embedding 64 --hidden 128 --layers 2
-  --epochs 30 --sequence 64 --learning-rate 0.003 --gradient-clip 1.0
+  --merges 160 --min-frequency 2 --embedding 256 --hidden 256 --layers 2
+  --epochs 25 --sequence 64 --learning-rate 0.0025 --gradient-clip 1.0
 
 Geração/agente:
   --tokens 96 --top-k 8 --temperature 0.6 --repetition 1.08 --seed N
   --memory-hits 3 --memory-score 0.65 --context 512 --no-remember
 
-Interface web nativa:
-  --host 0.0.0.0 --port 8080 --workers 4
+Interface web, internet e API linguística:
+  --host 0.0.0.0 --port 8080 --workers 4 [--no-internet]
+  --llm-url URL --llm-model MODELO [--llm-key-env CORTEX_LLM_API_KEY]
+  --enable-self-edit --source-root .   (proposta + confirmação humana obrigatória)
 
 Exemplo rápido:
   make release
@@ -256,7 +265,7 @@ void command_train(const Arguments& arguments) {
 
     cortex::BpeTokenizer tokenizer;
     tokenizer.train(corpus,
-                    arguments.size_value("merges", 128U),
+                    arguments.size_value("merges", 160U),
                     arguments.size_value("min-frequency", 2U));
     std::vector<cortex::TokenId> tokens = tokenizer.encode(corpus, true, true);
 
@@ -431,6 +440,16 @@ void command_serve(const Arguments& arguments) {
     options.worker_count = arguments.size_value("workers", options.worker_count);
     options.memory_path = paths.memory;
     options.agent = agent_options(arguments);
+    options.internet_enabled = !arguments.flag("no-internet", false);
+    options.language_api.endpoint = arguments.get(
+        "llm-url", environment_value("CORTEX_LLM_URL"));
+    options.language_api.model = arguments.get(
+        "llm-model", environment_value("CORTEX_LLM_MODEL"));
+    options.language_api.api_key_environment = arguments.get(
+        "llm-key-env", "CORTEX_LLM_API_KEY");
+    options.language_api.timeout_seconds = arguments.size_value("llm-timeout", 30U);
+    options.self_edit_enabled = arguments.flag("enable-self-edit", false);
+    options.source_root = arguments.get("source-root", ".");
     cortex::run_web_chat_server(runtime.tokenizer, runtime.model, runtime.memory, options);
 }
 

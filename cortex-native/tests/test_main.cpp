@@ -1,3 +1,4 @@
+#include "cortex/connectivity.hpp"
 #include "cortex/core.hpp"
 #include "cortex/memory.hpp"
 #include "cortex/neural_model.hpp"
@@ -33,6 +34,30 @@ void expect(bool condition, const std::string& message) {
                          / ("cortex-native-tests-" + std::to_string(stamp));
     fs::create_directories(directory);
     return directory;
+}
+
+void test_connectivity_protocol() {
+    expect(cortex::url_encode("ação e C++") == "a%C3%A7%C3%A3o%20e%20C%2B%2B",
+           "URL encoder preserva UTF-8 por percent-encoding");
+    const std::string response = R"({"choices":[{"message":{"content":"Olá\nMundo \ud83d\ude80"}}]})";
+    expect(cortex::json_string_field(response, "content").value_or("")
+               == "Olá\nMundo 🚀",
+           "parser extrai conteúdo e surrogate pair da API linguística");
+    cortex::NativeHttpClient::validate_url("https://api.example.com/v1/chat/completions");
+    cortex::NativeHttpClient::validate_url("http://127.0.0.1:8081/v1/chat/completions");
+    bool rejected = false;
+    try {
+        cortex::NativeHttpClient::validate_url("http://example.com/inseguro");
+    } catch (const cortex::Error&) {
+        rejected = true;
+    }
+    expect(rejected, "cliente recusa HTTP remoto sem TLS");
+
+    cortex::ModelConfig million_config;
+    million_config.vocabulary_size = 420U; // 4 especiais + 256 bytes + 160 merges.
+    cortex::NeuralLanguageModel million_model(million_config);
+    expect(million_model.parameter_count() == 1'003'428U,
+           "configuração padrão possui 1.003.428 parâmetros treináveis");
 }
 
 void test_matrix() {
@@ -147,6 +172,10 @@ void test_embedded_web_interface() {
            "interface web conversa com endpoint relativo nativo");
     expect(html.find("Node.js") != std::string_view::npos,
            "interface informa ausência de runtime Node.js");
+    expect(html.find("language_api") != std::string_view::npos,
+           "interface permite selecionar API linguística");
+    expect(html.find("/api/code/propose") != std::string_view::npos,
+           "interface possui fluxo de autoedição controlada");
 }
 
 void test_long_term_memory(const fs::path& directory) {
@@ -177,6 +206,7 @@ void test_long_term_memory(const fs::path& directory) {
 int main() {
     const fs::path directory = temporary_test_directory();
     try {
+        test_connectivity_protocol();
         test_matrix();
         test_tokenizer(directory);
         test_neural_training_and_checkpoint(directory);
