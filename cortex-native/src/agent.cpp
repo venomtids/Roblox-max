@@ -1,9 +1,58 @@
 #include "cortex/agent.hpp"
 
 #include <algorithm>
+#include <array>
 #include <sstream>
 
 namespace cortex {
+namespace {
+
+[[nodiscard]] bool response_space(char character) noexcept {
+    return character == ' ' || character == '\t' || character == '\r'
+           || character == '\n' || character == '\f' || character == '\v';
+}
+
+} // namespace
+
+std::string extract_direct_answer(std::string_view generated_text) {
+    // Remove espaços que o modelo pode emitir antes do primeiro conteúdo útil.
+    while (!generated_text.empty() && response_space(generated_text.front())) {
+        generated_text.remove_prefix(1U);
+    }
+
+    // Alguns checkpoints repetem o papel antes da resposta; ele não deve aparecer na UI.
+    constexpr std::array<std::string_view, 3U> leading_roles{
+        "Assistente:", "Assistant:", "Cortex:"
+    };
+    for (const std::string_view role : leading_roles) {
+        if (generated_text.starts_with(role)) {
+            generated_text.remove_prefix(role.size());
+            while (!generated_text.empty() && response_space(generated_text.front())) {
+                generated_text.remove_prefix(1U);
+            }
+            break;
+        }
+    }
+
+    // O corpus usa linha em branco e marcadores de papel entre turnos. A geração neural
+    // pode continuar prevendo o diálogo seguinte; devolvemos apenas o primeiro turno.
+    constexpr std::array<std::string_view, 10U> stop_markers{
+        "\r\n\r\n", "\n\n", "\nUsuário:", "\nUsuario:", "\nUser:",
+        "\nSistema:", "\nSystem:", "\nAssistente:", "\nAssistant:", "\nCortex:"
+    };
+    std::size_t end = generated_text.size();
+    for (const std::string_view marker : stop_markers) {
+        const std::size_t found = generated_text.find(marker);
+        if (found != std::string_view::npos) {
+            end = std::min(end, found);
+        }
+    }
+    generated_text = generated_text.substr(0U, end);
+    while (!generated_text.empty() && response_space(generated_text.back())) {
+        generated_text.remove_suffix(1U);
+    }
+    return std::string(generated_text);
+}
 
 CognitiveAgent::CognitiveAgent(const BpeTokenizer& tokenizer,
                                const NeuralLanguageModel& model,
@@ -44,7 +93,9 @@ std::vector<TokenId> CognitiveAgent::bounded_context(
     }
 
     std::ostringstream context;
-    context << "Sistema: responda usando padrões aprendidos e memórias relevantes.\n";
+    // A frase coincide com o formato do corpus demonstrativo e estabiliza o papel do modelo.
+    context << "Sistema: Você é Cortex, um assistente técnico nativo, objetivo, seguro e "
+               "verificável.\n";
     if (!hits.empty()) {
         context << "Memórias relevantes:\n";
         for (const MemoryHit& hit : hits) {
@@ -90,7 +141,10 @@ AgentReply CognitiveAgent::respond(std::string_view prompt,
     const std::vector<TokenId> context = bounded_context(
         prompt, conversation_context, hits, options.maximum_context_tokens);
     std::vector<TokenId> generated = model_.generate(context, options.generation);
-    std::string answer = tokenizer_.decode(generated);
+    std::string answer = extract_direct_answer(tokenizer_.decode(generated));
+    if (answer.empty()) {
+        answer = "Não consegui formular uma resposta direta. Tente reformular a pergunta.";
+    }
 
     std::uint64_t stored_id = 0U;
     if (options.remember_interaction) {

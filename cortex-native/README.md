@@ -61,7 +61,10 @@ O `CognitiveAgent` executa um ciclo RAG local:
 2. recupera episódios semanticamente próximos;
 3. monta um contexto limitado;
 4. gera a resposta no modelo neural;
-5. opcionalmente consolida pergunta e resposta como um novo episódio.
+5. recorta qualquer continuação de corpus (`Usuário:`, `Sistema:` ou novo turno), entregando apenas a resposta atual;
+6. opcionalmente consolida pergunta e resposta como um novo episódio.
+
+Essa finalização é importante em modelos autoregressivos: sem ela, o modelo pode responder corretamente e continuar prevendo o próximo diálogo do corpus, parecendo pouco direto.
 
 ### D. Interface de conversa no navegador
 
@@ -106,7 +109,7 @@ cortex-native/
 │   ├── web_server.cpp                sockets, HTTP, JSON e API de chat
 │   └── web_ui.cpp                    interface responsiva embutida
 └── tests/
-    └── test_main.cpp                 25 verificações determinísticas
+    └── test_main.cpp                 32 verificações determinísticas
 ```
 
 Os arquivos principais possuem comentários junto a cada bloco algorítmico e às linhas onde as equações são aplicadas. Operações triviais não são escondidas por macros ou frameworks; o fluxo matemático pode ser acompanhado diretamente no fonte.
@@ -145,13 +148,15 @@ make debug
   --corpus data/corpus.pt.txt \
   --state state \
   --merges 128 \
-  --embedding 48 \
-  --hidden 96 \
+  --embedding 64 \
+  --hidden 128 \
   --layers 2 \
-  --epochs 8 \
+  --epochs 30 \
   --sequence 64 \
-  --learning-rate 0.002
+  --learning-rate 0.003
 ```
+
+Os 30 ciclos padrão são deliberados: com apenas poucas épocas o pipeline já funciona, mas o modelo demonstrativo ainda produz fragmentos em vez de respostas estáveis. Para uso real, acompanhe a loss em validação e treine com um corpus muito maior.
 
 Arquivos produzidos:
 

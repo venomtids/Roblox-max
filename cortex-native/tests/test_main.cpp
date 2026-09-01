@@ -125,6 +125,21 @@ void test_neural_training_and_checkpoint(const fs::path& directory) {
     expect(first == second, "amostragem com mesma semente é determinística");
 }
 
+void test_direct_answer_extraction() {
+    expect(cortex::extract_direct_answer(
+               "  Assistente: Resposta objetiva.\n\nUsuário: próxima pergunta")
+               == "Resposta objetiva.",
+           "agente remove papel e interrompe antes do próximo usuário");
+    expect(cortex::extract_direct_answer("Resposta curta.\nSistema: novo turno")
+               == "Resposta curta.",
+           "agente interrompe antes de uma continuação de sistema");
+    expect(cortex::extract_direct_answer("Cortex: texto sem marcador posterior  ")
+               == "texto sem marcador posterior",
+           "agente remove prefixo Cortex e espaços finais");
+    expect(cortex::extract_direct_answer("\n\t") == "",
+           "saída neural sem conteúdo permanece vazia para fallback");
+}
+
 void test_embedded_web_interface() {
     const std::string_view html = cortex::web_chat_html();
     expect(html.starts_with("<!doctype html>"), "interface web possui documento HTML completo");
@@ -165,6 +180,7 @@ int main() {
         test_matrix();
         test_tokenizer(directory);
         test_neural_training_and_checkpoint(directory);
+        test_direct_answer_extraction();
         test_embedded_web_interface();
         test_long_term_memory(directory);
         fs::remove_all(directory);

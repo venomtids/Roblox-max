@@ -9,6 +9,7 @@ DEBUG_FLAGS := -O0 -g3 -fsanitize=address,undefined -fno-omit-frame-pointer
 BUILD_DIR := build
 SRC := src/core.cpp src/tokenizer.cpp src/neural_model.cpp src/memory.cpp src/agent.cpp \
        src/web_server.cpp src/web_ui.cpp
+HEADERS := $(wildcard include/cortex/*.hpp)
 CLI_SRC := $(SRC) src/main.cpp
 TEST_SRC := $(SRC) tests/test_main.cpp
 
@@ -28,13 +29,13 @@ debug: $(BUILD_DIR)/cortex-debug
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-$(BUILD_DIR)/cortex: $(CLI_SRC) | $(BUILD_DIR)
+$(BUILD_DIR)/cortex: $(CLI_SRC) $(HEADERS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(COMMON_FLAGS) $(RELEASE_FLAGS) $(CLI_SRC) -o $@ $(LDLIBS)
 
-$(BUILD_DIR)/cortex-debug: $(CLI_SRC) | $(BUILD_DIR)
+$(BUILD_DIR)/cortex-debug: $(CLI_SRC) $(HEADERS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(COMMON_FLAGS) $(DEBUG_FLAGS) $(CLI_SRC) -o $@ $(LDLIBS)
 
-$(BUILD_DIR)/cortex-tests: $(TEST_SRC) | $(BUILD_DIR)
+$(BUILD_DIR)/cortex-tests: $(TEST_SRC) $(HEADERS) | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(COMMON_FLAGS) -O2 $(TEST_SRC) -o $@ $(LDLIBS)
 
 test: $(BUILD_DIR)/cortex-tests

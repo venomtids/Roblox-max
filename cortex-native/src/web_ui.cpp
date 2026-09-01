@@ -334,12 +334,12 @@ std::string_view web_chat_html() noexcept {
           <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
         </summary>
         <div class="control">
-          <div class="control-line"><span>Temperatura</span><span class="control-value" id="temperatureValue">0.6</span></div>
-          <input id="temperature" type="range" min="0.2" max="1.5" value="0.6" step="0.1" aria-label="Temperatura">
+          <div class="control-line"><span>Temperatura</span><span class="control-value" id="temperatureValue">0.4</span></div>
+          <input id="temperature" type="range" min="0.2" max="1.5" value="0.4" step="0.1" aria-label="Temperatura">
         </div>
         <div class="control">
           <div class="control-line"><span>Top-k</span></div>
-          <select id="topK" aria-label="Top-k"><option selected>8</option><option>24</option><option>48</option><option>96</option></select>
+          <select id="topK" aria-label="Top-k"><option selected>4</option><option>8</option><option>24</option><option>48</option></select>
         </div>
         <div class="control">
           <div class="control-line"><span>Comprimento máximo</span></div>
@@ -484,7 +484,7 @@ std::string_view web_chat_html() noexcept {
       if (persist) {
         history.push({role, text, meta});
         history = history.slice(-40);
-        localStorage.setItem("cortex-chat-history", JSON.stringify(history));
+        localStorage.setItem("cortex-chat-history-v2", JSON.stringify(history));
       }
       requestAnimationFrame(() => { scrollArea.scrollTop = scrollArea.scrollHeight; });
       return article;
@@ -583,7 +583,7 @@ std::string_view web_chat_html() noexcept {
     function clearConversation() {
       if (busy) return;
       history = [];
-      localStorage.removeItem("cortex-chat-history");
+      localStorage.removeItem("cortex-chat-history-v2");
       conversationTitle.textContent = "Nova conversa";
       welcome();
       prompt.focus();
@@ -607,7 +607,7 @@ std::string_view web_chat_html() noexcept {
     backdrop.addEventListener("click", closeSidebar);
 
     try {
-      const saved = JSON.parse(localStorage.getItem("cortex-chat-history") || "[]");
+      const saved = JSON.parse(localStorage.getItem("cortex-chat-history-v2") || "[]");
       if (Array.isArray(saved) && saved.length) {
         history = [];
         messages.replaceChildren();

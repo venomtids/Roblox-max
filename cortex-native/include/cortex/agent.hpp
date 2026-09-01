@@ -13,7 +13,7 @@ namespace cortex {
 
 struct AgentOptions final {
     std::size_t memory_hits = 3U;
-    float minimum_memory_score = 0.10F;
+    float minimum_memory_score = 0.65F;
     std::size_t maximum_context_tokens = 512U;
     bool remember_interaction = true;
     GenerationOptions generation;
@@ -25,6 +25,9 @@ struct AgentReply final {
     std::vector<MemoryHit> recalled_memories;
     std::uint64_t stored_memory_id = 0U;
 };
+
+// Recorta continuações de corpus para devolver somente o turno atual do assistente.
+[[nodiscard]] std::string extract_direct_answer(std::string_view generated_text);
 
 // Orquestra recuperação, construção de contexto, inferência e consolidação episódica.
 class CognitiveAgent final {

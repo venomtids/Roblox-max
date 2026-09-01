@@ -13,16 +13,16 @@ namespace cortex {
 // Dimensões serializadas junto aos pesos; limites são validados antes de alocar.
 struct ModelConfig final {
     std::size_t vocabulary_size = 0U;
-    std::size_t embedding_size = 48U;
-    std::size_t hidden_size = 96U;
+    std::size_t embedding_size = 64U;
+    std::size_t hidden_size = 128U;
     std::size_t layer_count = 2U;
     std::uint64_t seed = 0xA17E'2026ULL;
 };
 
 struct TrainingOptions final {
-    std::size_t epochs = 5U;
+    std::size_t epochs = 30U;
     std::size_t sequence_length = 64U;
-    float learning_rate = 0.002F;
+    float learning_rate = 0.003F;
     float gradient_clip = 1.0F;
     float beta1 = 0.9F;
     float beta2 = 0.999F;
@@ -38,8 +38,8 @@ struct TrainingMetrics final {
 
 struct GenerationOptions final {
     std::size_t maximum_tokens = 96U;
-    std::size_t top_k = 24U;
-    float temperature = 0.8F;
+    std::size_t top_k = 8U;
+    float temperature = 0.6F;
     float repetition_penalty = 1.08F;
     std::uint64_t seed = 0x51A9'B00BULL;
 };

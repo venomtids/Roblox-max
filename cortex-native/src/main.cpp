@@ -230,19 +230,19 @@ Uso:
   cortex benchmark [--state DIR] [--steps 1000]
 
 Treinamento:
-  --merges 128 --min-frequency 2 --embedding 48 --hidden 96 --layers 2
-  --epochs 5 --sequence 64 --learning-rate 0.002 --gradient-clip 1.0
+  --merges 128 --min-frequency 2 --embedding 64 --hidden 128 --layers 2
+  --epochs 30 --sequence 64 --learning-rate 0.003 --gradient-clip 1.0
 
 Geração/agente:
-  --tokens 96 --top-k 24 --temperature 0.8 --repetition 1.08 --seed N
-  --memory-hits 3 --memory-score 0.10 --context 512 --no-remember
+  --tokens 96 --top-k 8 --temperature 0.6 --repetition 1.08 --seed N
+  --memory-hits 3 --memory-score 0.65 --context 512 --no-remember
 
 Interface web nativa:
   --host 0.0.0.0 --port 8080 --workers 4
 
 Exemplo rápido:
   make release
-  ./build/cortex train --corpus data/corpus.pt.txt --state state --epochs 8
+  ./build/cortex train --corpus data/corpus.pt.txt --state state
   ./build/cortex serve --state state --host 0.0.0.0 --port 8080
   # abra http://localhost:8080 e converse no navegador
 )HELP";
