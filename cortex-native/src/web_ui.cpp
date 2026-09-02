@@ -386,7 +386,7 @@ std::string_view web_chat_html() noexcept {
           <select id="maxTokens" aria-label="Máximo de tokens"><option>64</option><option selected>96</option><option>128</option><option>192</option><option>512</option><option>1024</option><option>2048</option><option>4096</option></select>
         </div>
         <div class="toggle-line">
-          <span>Modelo aberto / API</span>
+          <span>Modelo GGUF local</span>
           <label class="switch"><input id="languageApi" type="checkbox" checked><span></span></label>
         </div>
         <div class="toggle-line">
@@ -395,7 +395,7 @@ std::string_view web_chat_html() noexcept {
         </div>
         <div class="toggle-line">
           <span>Memória automática</span>
-          <label class="switch"><input id="remember" type="checkbox" checked><span></span></label>
+          <label class="switch"><input id="remember" type="checkbox"><span></span></label>
         </div>
       </details>
 
@@ -494,10 +494,10 @@ std::string_view web_chat_html() noexcept {
     let temperatureTouched = false;
 
     const suggestions = [
+      ["Executar benchmark", "benchmark"],
+      ["Testar cálculo local", "Quanto é 17 * (8 + 4) - 9?"],
       ["Explique a arquitetura", "Como BPE, GRU e memória trabalham juntos?"],
-      ["Memória de longo prazo", "Como você armazena e recupera lembranças?"],
-      ["Treinamento neural", "Explique BPTT e Adam de forma objetiva."],
-      ["Desempenho nativo", "Por que o núcleo foi escrito em C++20?"]
+      ["Memória de longo prazo", "Como você armazena e recupera lembranças?"]
     ];
 
     function welcome() {
@@ -506,7 +506,7 @@ std::string_view web_chat_html() noexcept {
       root.className = "welcome";
       const inner = document.createElement("div");
       inner.className = "welcome-inner";
-      inner.innerHTML = '<div class="logo welcome-logo">C</div><h1>Converse com sua <span>IA nativa</span></h1><p>Use <code>--local</code> para ativar Qwen3 GGUF; memória, recuperação e servidor continuam locais no motor C++.</p>';
+      inner.innerHTML = '<div class="logo welcome-logo">C</div><h1>Converse com sua <span>IA nativa</span></h1><p>Benchmark, cálculos, memória e respostas técnicas funcionam sem API. <code>--local</code> adiciona um Qwen3 GGUF para conhecimento amplo.</p>';
       const grid = document.createElement("div");
       grid.className = "suggestions";
       for (const [title, text] of suggestions) {
@@ -567,7 +567,7 @@ std::string_view web_chat_html() noexcept {
       if (persist) {
         history.push({role, text, meta});
         history = history.slice(-40);
-        localStorage.setItem("cortex-chat-history-v3", JSON.stringify(history));
+        localStorage.setItem("cortex-chat-history-v4", JSON.stringify(history));
       }
       requestAnimationFrame(() => { scrollArea.scrollTop = scrollArea.scrollHeight; });
       return article;
@@ -611,9 +611,9 @@ std::string_view web_chat_html() noexcept {
         const openModelOnline = data.language_api && data.language_provider === "local-open-model";
         const apiWaiting = data.language_api_state === "missing-key";
         byId("runtimeStatus").textContent = openModelOnline ? "IA aberta local conectada"
-          : geminiOnline ? "Gemini conectado"
-          : data.language_api ? "API linguística online"
-          : apiWaiting ? "API sem chave · fallback local" : "Núcleo local online";
+          : geminiOnline ? "Provedor opcional conectado"
+          : data.language_api ? "Modelo linguístico conectado"
+          : apiWaiting ? "Provedor sem chave · modo local" : "Cortex local confiável";
         const activeParameters = Number(data.language_parameters || 0);
         const contextDetail = Number(data.language_context || 0)
           ? ` · ${Number(data.language_context).toLocaleString("pt-BR")} ctx` : "";
@@ -621,9 +621,9 @@ std::string_view web_chat_html() noexcept {
           ? `${activeParameters.toLocaleString("pt-BR")} parâmetros do modelo${contextDetail} · ${data.memories} memórias`
           : data.language_api
             ? `Parâmetros não informados${contextDetail} · ${data.memories} memórias`
-            : `${data.parameters.toLocaleString("pt-BR")} parâmetros GRU · ${data.memories} memórias · use --local para Qwen3`;
+            : `${data.parameters.toLocaleString("pt-BR")} parâmetros GRU + filtro lógico · ${data.memories} memórias`;
         byId("modelLabel").textContent = data.language_api ? data.language_model
-          : apiWaiting ? `${data.language_model} · sem chave` : `GRU ${data.layers}×${data.hidden}`;
+          : apiWaiting ? `${data.language_model} · modo local` : data.language_model;
         if (data.language_api && !maxTokensTouched && maxTokens.value === "96") maxTokens.value = "1024";
         if (openModelOnline && !topKTouched) topK.value = "20";
         if (openModelOnline && !temperatureTouched) {
@@ -676,9 +676,11 @@ std::string_view web_chat_html() noexcept {
         if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
         thinking.remove();
         const recalled = Array.isArray(data.recalled) ? data.recalled.length : 0;
-        const provider = data.provider === "local-open-model" ? `Local · ${data.provider_model}`
-          : data.provider === "language-api" ? `API · ${data.provider_model}`
-          : data.provider === "internet" ? "Internet" : "GRU local";
+        const provider = data.provider === "local-open-model" ? `GGUF local · ${data.provider_model}`
+          : data.provider === "language-api" ? `Provedor opcional · ${data.provider_model}`
+          : data.provider === "internet" ? "Internet"
+          : String(data.provider || "").startsWith("local-") ? `Local · ${data.provider_model}`
+          : "Cortex local";
         const meta = `${provider} · ${data.latency_ms} ms${recalled ? ` · ${recalled} memória${recalled > 1 ? "s" : ""}` : ""}`;
         appendMessage("assistant", data.reply || "O modelo encerrou a geração sem produzir texto.", meta);
         if (data.warning) showToast(data.warning);
@@ -758,7 +760,7 @@ std::string_view web_chat_html() noexcept {
     function clearConversation() {
       if (busy) return;
       history = [];
-      localStorage.removeItem("cortex-chat-history-v3");
+      localStorage.removeItem("cortex-chat-history-v4");
       conversationTitle.textContent = "Nova conversa";
       welcome();
       prompt.focus();
@@ -794,7 +796,7 @@ std::string_view web_chat_html() noexcept {
     });
 
     try {
-      const saved = JSON.parse(localStorage.getItem("cortex-chat-history-v3") || "[]");
+      const saved = JSON.parse(localStorage.getItem("cortex-chat-history-v4") || "[]");
       if (Array.isArray(saved) && saved.length) {
         history = [];
         messages.replaceChildren();

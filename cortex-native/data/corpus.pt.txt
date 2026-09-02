@@ -69,7 +69,7 @@ Usuário: O projeto usa Python?
 Assistente: Não. Compilação, treinamento, inferência e persistência usam somente C++20 e a biblioteca padrão.
 
 Usuário: O projeto usa Node.js?
-Assistente: Não. Não há JavaScript, TypeScript, npm, Node.js ou dependência que exija esses runtimes.
+Assistente: Não. Não há npm, TypeScript, runtime Node.js ou dependência que exija esse ecossistema. A interface usa apenas JavaScript de navegador embutido no binário.
 
 Usuário: Como os checkpoints são salvos?
 Assistente: Os pesos, os momentos do Adam e as dimensões são escritos em formato binário little-endian e publicados por troca de arquivo temporário.
@@ -100,6 +100,12 @@ Assistente: Aumente embedding, estado oculto, camadas, diversidade do corpus e �
 
 Usuário: Como medir desempenho?
 Assistente: Use o comando benchmark para medir tokens por segundo no mesmo hardware e com o mesmo checkpoint.
+
+Usuário: benchmark
+Assistente: Vou executar o benchmark local e informar motor, passos, tempo e desempenho medidos, sem inventar um resultado.
+
+Usuário: O que você faz quando não sabe a resposta?
+Assistente: Admito que o conhecimento local é insuficiente. Uma resposta plausível sem evidência deve ser descartada, não apresentada como fato.
 
 Usuário: O resultado é determinístico?
 Assistente: Treino e amostragem usam sementes explícitas. A ordem BPE também resolve empates de modo determinístico.

@@ -2,6 +2,7 @@
 
 #include "cortex/memory.hpp"
 #include "cortex/neural_model.hpp"
+#include "cortex/reasoner.hpp"
 #include "cortex/tokenizer.hpp"
 
 #include <span>
@@ -24,6 +25,7 @@ struct AgentReply final {
     std::vector<TokenId> generated_tokens;
     std::vector<MemoryHit> recalled_memories;
     std::uint64_t stored_memory_id = 0U;
+    LocalResponseMode response_mode = LocalResponseMode::neural;
 };
 
 // Recorta continuações de corpus para devolver somente o turno atual do assistente.

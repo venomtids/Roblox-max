@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <optional>
 #include <sstream>
+#include <utility>
 
 namespace cortex {
 namespace {
@@ -150,15 +152,38 @@ AgentReply CognitiveAgent::respond(std::string_view prompt,
         throw Error("o prompt do agente não pode estar vazio");
     }
 
-    // Recuperação e inferência ficam desacopladas: memória pode crescer sem retreinar pesos.
-    const std::vector<MemoryHit> hits = recall(prompt, options.memory_hits,
-                                               options.minimum_memory_score);
-    const std::vector<TokenId> context = bounded_context(
-        prompt, conversation_context, hits, options.maximum_context_tokens);
-    std::vector<TokenId> generated = model_.generate(context, options.generation);
-    std::string answer = extract_direct_answer(tokenizer_.decode(generated));
-    if (answer.empty()) {
-        answer = "Não consegui formular uma resposta direta. Tente reformular a pergunta.";
+    std::vector<MemoryHit> hits;
+    std::vector<TokenId> generated;
+    std::string answer;
+    LocalResponseMode response_mode = LocalResponseMode::neural;
+
+    // Intenções verificáveis são resolvidas antes da amostragem. Isso impede que uma palavra
+    // como "benchmark" seja confundida com uma saudação aprendida no pequeno corpus.
+    std::optional<NativeAnswer> native = reason_locally(
+        prompt, conversation_context, model_);
+    if (native && native->mode == LocalResponseMode::memory) {
+        // Somente uma pergunta sobre lembranças paga o custo da busca antes de uma regra nativa.
+        hits = recall(prompt, options.memory_hits, options.minimum_memory_score);
+        native = reason_locally(prompt, conversation_context, model_, hits);
+    }
+    if (native) {
+        answer = std::move(native->text);
+        response_mode = native->mode;
+    } else {
+        // Recuperação e inferência ficam desacopladas: memória pode crescer sem retreinar pesos.
+        hits = recall(prompt, options.memory_hits, options.minimum_memory_score);
+        const std::vector<TokenId> context = bounded_context(
+            prompt, conversation_context, hits, options.maximum_context_tokens);
+        generated = model_.generate(context, options.generation);
+        std::string candidate = extract_direct_answer(tokenizer_.decode(generated));
+        if (neural_response_is_relevant(prompt, candidate)) {
+            answer = std::move(candidate);
+        } else {
+            NativeAnswer safe = safe_local_fallback();
+            answer = std::move(safe.text);
+            response_mode = safe.mode;
+            generated.clear(); // a continuação rejeitada não conta como resposta entregue.
+        }
     }
 
     std::uint64_t stored_id = 0U;
@@ -174,7 +199,8 @@ AgentReply CognitiveAgent::respond(std::string_view prompt,
         std::move(answer),
         std::move(generated),
         hits,
-        stored_id
+        stored_id,
+        response_mode
     };
 }
 

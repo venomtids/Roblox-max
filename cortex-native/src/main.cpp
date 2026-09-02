@@ -155,11 +155,6 @@ struct StatePaths final {
     return value != nullptr && *value != '\0' ? std::string(value) : std::move(fallback);
 }
 
-[[nodiscard]] bool environment_present(const char* name) noexcept {
-    const char* value = std::getenv(name);
-    return value != nullptr && *value != '\0';
-}
-
 [[nodiscard]] StatePaths state_paths(const Arguments& arguments) {
     const fs::path directory = arguments.get("state", "state");
     return StatePaths{
@@ -271,7 +266,7 @@ Interface web, modelo aberto local, internet e APIs:
   --local-model ARQUIVO.gguf | --local-hf ORG/MODELO:QUANTIZACAO
   --llama-server CAMINHO --local-port 8081 --local-context 8192
   --local-threads N --local-gpu-layers N --local-startup-timeout 1200
-  --gemini  (ou apenas defina GEMINI_API_KEY no ambiente)
+  --gemini  (compatibilidade remota opt-in; nunca ativada automaticamente)
   --llm-url URL --llm-model MODELO [--llm-key-env NOME]
   --llm-reasoning low|medium|high [--llm-timeout 45]
   --enable-self-edit --source-root .   (proposta + confirmação humana obrigatória)
@@ -542,11 +537,9 @@ void command_serve(const Arguments& arguments) {
         options.language_api.top_p = 0.8F;
         options.language_api.presence_penalty = 1.5F;
     } else {
-        // Com GEMINI_API_KEY presente, a rota oficial é ativada sem configuração adicional.
+        // Provedores remotos são compatibilidade explicitamente opt-in; o padrão sempre é local.
         const bool gemini_flag = arguments.flag("gemini", false);
-        const bool gemini = gemini_flag
-                            || (options.language_api.endpoint.empty()
-                                && environment_present("GEMINI_API_KEY"));
+        const bool gemini = gemini_flag;
         if (gemini && (options.language_api.endpoint.empty()
                        || (gemini_flag && !arguments.has("llm-url")))) {
             options.language_api.endpoint =

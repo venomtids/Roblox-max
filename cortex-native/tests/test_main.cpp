@@ -3,6 +3,7 @@
 #include "cortex/local_model.hpp"
 #include "cortex/memory.hpp"
 #include "cortex/neural_model.hpp"
+#include "cortex/reasoner.hpp"
 #include "cortex/tokenizer.hpp"
 #include "cortex/web_server.hpp"
 
@@ -268,6 +269,92 @@ void test_direct_answer_extraction() {
            "saída neural sem conteúdo permanece vazia para fallback");
 }
 
+void test_native_reasoner() {
+    cortex::ModelConfig config;
+    config.vocabulary_size = cortex::BpeTokenizer::first_merge_id;
+    config.embedding_size = 8U;
+    config.hidden_size = 12U;
+    config.layer_count = 1U;
+    config.seed = 77U;
+    const cortex::NeuralLanguageModel model(config);
+
+    const auto benchmark = cortex::reason_locally("benchmark", {}, model);
+    expect(benchmark && benchmark->mode == cortex::LocalResponseMode::benchmark
+               && benchmark->text.find("Benchmark local concluído") != std::string::npos
+               && benchmark->text.find("passos neurais/s") != std::string::npos,
+           "reasoner executa benchmark real em vez de responder com saudação");
+
+    cortex::BpeTokenizer tokenizer;
+    cortex::LongTermMemory agent_memory(config.hidden_size);
+    cortex::CognitiveAgent agent(tokenizer, model, agent_memory);
+    cortex::AgentOptions agent_options;
+    agent_options.remember_interaction = false;
+    const cortex::AgentReply integrated = agent.respond("benchmark", agent_options);
+    expect(integrated.response_mode == cortex::LocalResponseMode::benchmark
+               && integrated.generated_tokens.empty()
+               && integrated.text.find("Benchmark local concluído") != std::string::npos,
+           "CognitiveAgent prioriza ferramenta nativa e não amostra o GRU para benchmark");
+    agent_options.generation.maximum_tokens = 24U;
+    agent_options.maximum_context_tokens = 64U;
+    const cortex::AgentReply unknown = agent.respond(
+        "capital desconhecida de um planeta fictício", agent_options);
+    expect(unknown.response_mode == cortex::LocalResponseMode::safe_fallback
+               && unknown.generated_tokens.empty()
+               && unknown.text.find("Para não inventar") != std::string::npos,
+           "CognitiveAgent descarta geração sem evidência e assume seu limite");
+
+    const auto calculation = cortex::reason_locally("Quanto é 2 * (8 + 3)?", {}, model);
+    expect(calculation && calculation->mode == cortex::LocalResponseMode::calculation
+               && calculation->text.find("= 22") != std::string::npos,
+           "reasoner calcula expressão com precedência e parênteses");
+
+    const auto invalid_calculation = cortex::reason_locally("calcule 9 / 0", {}, model);
+    expect(invalid_calculation
+               && invalid_calculation->text.find("divisão por zero") != std::string::npos,
+           "calculadora rejeita divisão por zero com explicação lógica");
+
+    const auto architecture = cortex::reason_locally(
+        "Como BPE, GRU e memória trabalham juntos?", {}, model);
+    expect(architecture && architecture->mode == cortex::LocalResponseMode::knowledge
+               && architecture->text.find("quatro caminhos") != std::string::npos,
+           "base técnica responde por intenção, não por próxima palavra aleatória");
+
+    const auto follow_up = cortex::reason_locally(
+        "explique mais",
+        "Usuário: Como funciona uma GRU?\nAssistente: Um GGUF também pode ser usado.", model);
+    expect(follow_up && follow_up->text.find("gate de reset") != std::string::npos,
+           "continuação usa a última pergunta do usuário, não palavras da resposta anterior");
+
+    const std::array<cortex::MemoryHit, 1U> memories{{
+        cortex::MemoryHit{42U, 0U, 0.91F, "Usuário: meu editor favorito é Vim"}
+    }};
+    const auto memory = cortex::reason_locally(
+        "O que você lembra de mim?", {}, model, memories);
+    expect(memory && memory->mode == cortex::LocalResponseMode::memory
+               && memory->text.find("Vim") != std::string::npos,
+           "consulta explícita devolve memória persistente recuperada");
+
+    expect(!cortex::neural_response_is_relevant(
+               "benchmark", "Olá! Estou pronta para responder. Como posso ajudar?"),
+           "filtro rejeita exatamente a resposta desconectada relatada pelo usuário");
+    expect(cortex::neural_response_is_relevant(
+               "Como funciona uma GRU?",
+               "A GRU funciona com gates que atualizam seu estado oculto."),
+           "filtro preserva resposta neural com termos relevantes");
+    const auto model_identity = cortex::reason_locally("Qual é o seu modelo?", {}, model);
+    expect(model_identity
+               && model_identity->text.find(std::to_string(model.parameter_count()))
+                      != std::string::npos,
+           "reasoner explica o modelo realmente carregado sem solicitar uma API");
+    const auto stable_fact = cortex::reason_locally("Por que o céu é azul?", {}, model);
+    expect(stable_fact && stable_fact->text.find("Rayleigh") != std::string::npos,
+           "base local fornece fato estável com explicação causal");
+    expect(!cortex::reason_locally("capital desconhecida de um planeta fictício", {}, model),
+           "reasoner não inventa conhecimento fora da base verificável");
+    expect(cortex::safe_local_fallback().text.find("Para não inventar") != std::string::npos,
+           "fallback admite limite local em vez de alucinar");
+}
+
 void test_embedded_web_interface() {
     const std::string_view html = cortex::web_chat_html();
     expect(html.starts_with("<!doctype html>"), "interface web possui documento HTML completo");
@@ -276,9 +363,15 @@ void test_embedded_web_interface() {
     expect(html.find("Node.js") != std::string_view::npos,
            "interface informa ausência de runtime Node.js");
     expect(html.find("language_api") != std::string_view::npos,
-           "interface permite selecionar modelo avançado");
+           "interface permite ativar o modelo GGUF local sem expor uma chave");
     expect(html.find("local-open-model") != std::string_view::npos,
            "interface identifica execução GGUF realmente local");
+    expect(html.find("Executar benchmark") != std::string_view::npos
+               && html.find("Testar cálculo local") != std::string_view::npos,
+           "interface oferece ações locais que produzem resultados verificáveis");
+    expect(html.find("id=\"remember\" type=\"checkbox\" checked")
+               == std::string_view::npos,
+           "memória automática inicia desligada para evitar episódios irrelevantes");
     expect(html.find("/api/code/propose") != std::string_view::npos,
            "interface possui fluxo de autoedição controlada");
 }
@@ -332,13 +425,9 @@ int main(int argc, char** argv) {
                                       && request.find("\\\"top_p\\\":0.8") != std::string::npos
                                       && request.find("\\\"presence_penalty\\\":1.5")
                                              != std::string::npos;
-        const bool autodetected_payload =
-            request.find("\\\"model\\\":\\\"gemini-3.7-flash\\\"") != std::string::npos
-            && request.find("\\\"reasoning_effort\\\":\\\"medium\\\"")
-                   != std::string::npos;
         const bool payload_valid = request.find("\\\"max_tokens\\\":1024")
                                        != std::string::npos
-                                   && (explicit_payload || autodetected_payload);
+                                   && explicit_payload;
         const char* content = bearer_in_pipe && !bearer_in_arguments && payload_valid
                               ? "payload Gemini válido" : "payload inválido";
         std::cout << "{\"choices\":[{\"message\":{\"content\":"
@@ -356,6 +445,7 @@ int main(int argc, char** argv) {
         test_tokenizer(directory);
         test_neural_training_and_checkpoint(directory);
         test_direct_answer_extraction();
+        test_native_reasoner();
         test_embedded_web_interface();
         test_long_term_memory(directory);
         fs::remove_all(directory);

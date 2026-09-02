@@ -1,8 +1,8 @@
 # Cortex Native AI
 
-Agente cognitivo e servidor **100% C++20**, sem Python, Node.js, npm, Docker ou bibliotecas fechadas. O núcleo próprio implementa BPE, GRU/BPTT/Adam, memória e HTTP; para uso diário offline, ele agora inicia automaticamente o runtime aberto [llama.cpp](https://github.com/ggml-org/llama.cpp) e pesos GGUF do [Qwen3](https://huggingface.co/collections/Qwen/qwen3). A interface usa somente JavaScript de navegador embutido, sem runtime ou build Node.
+Agente cognitivo e servidor **100% C++20**, sem Python, Node.js, npm, Docker ou bibliotecas fechadas. Sem configurar chave ou provedor, o núcleo local combina BPE, GRU/BPTT/Adam, memória, calculadora, benchmark real e o **Cortex Native Reasoner**, que reconhece intenções verificáveis e bloqueia continuações sem relação com a pergunta. Com `--local`, o mesmo executável supervisiona [llama.cpp](https://github.com/ggml-org/llama.cpp) e pesos GGUF do [Qwen3](https://huggingface.co/collections/Qwen/qwen3). A interface usa somente JavaScript de navegador embutido, sem runtime ou build Node.
 
-> Não é tecnicamente possível transformar por ajuste rápido um GRU de 1 milhão de parâmetros em um Gemini: faltariam os pesos, trilhões de tokens e o cluster de treinamento. A solução local real implementada é trocar o gerador ativo por um modelo aberto pré-treinado de **0,6B, 1,7B, 4B, 14,8B ou 30,5B parâmetros**, mantendo memória, internet e o GRU de 1.003.428 parâmetros como fallback. Quanto maior o perfil e o hardware, mais próxima fica a qualidade de uso diário; não se afirma equivalência falsa ao Gemini.
+> **Nenhuma API ou chave é necessária.** O GRU de 1.003.428 parâmetros não possui conhecimento geral suficiente para ser usado sem controle: uma saída fluente pode estar errada. Por isso, tarefas determinísticas passam pelo reasoner e toda saída neural restante precisa superar um filtro de relevância; caso contrário Cortex admite o limite em vez de inventar. Para conhecimento amplo offline, o gerador pode ser trocado por um modelo aberto pré-treinado de **0,6B, 1,7B, 4B, 14,8B ou 30,5B parâmetros**. Não se afirma equivalência falsa a modelos de fronteira.
 
 ## 1. Arquitetura
 
@@ -17,12 +17,14 @@ pergunta UTF-8
                                                    │
                      ┌─────────────────────────────┼──────────────────────┐
                      ▼                             ▼                      ▼
-             Qwen3 GGUF local              API opcional          GRU 1M fallback
-             llama.cpp C++                 Gemini/outras          sempre offline
+          Native Reasoner + ferramentas     Qwen3 GGUF local      GRU 1M controlado
+          benchmark/cálculo/memória          llama.cpp C++         filtro de relevância
                      │                             │                      │
                      └─────────────────────────────┴──────────────────────┘
                                                    ▼
-                                    resposta + consolidação na memória
+                              resposta confiável + consolidação na memória
+                                                   │
+                                                   └── API remota somente se solicitada
 ```
 
 ### A. Ingestão e tokenização
@@ -49,24 +51,29 @@ A geração é autoregressiva e possui top-k, temperatura, penalidade de repeti�
 
 A média dos estados ocultos de uma frase forma um embedding L2-normalizado. `LongTermMemory` persiste texto, vetor, timestamp e id monotônico. A busca exata por similaridade de cosseno divide registros entre threads do pool persistente, sem locks no caminho interno; só há um `shared_lock` durante a consulta. Essa busca exata fornece um baseline correto antes de trocar por HNSW/IVF em coleções muito grandes.
 
-O `CognitiveAgent` executa um ciclo RAG local:
+O `CognitiveAgent` executa um ciclo local com confiança explícita:
 
-1. vetoriza a pergunta;
-2. recupera episódios semanticamente próximos;
-3. monta um contexto limitado;
-4. gera a resposta no modelo neural;
-5. recorta qualquer continuação de corpus (`Usuário:`, `Sistema:` ou novo turno), entregando apenas a resposta atual;
-6. opcionalmente consolida pergunta e resposta como um novo episódio.
+1. classifica intenções que podem ser verificadas sem geração probabilística;
+2. executa benchmark, cálculo ou consulta de memória diretamente quando solicitado;
+3. para outros casos, vetoriza a pergunta e recupera episódios semanticamente próximos;
+4. monta um contexto limitado e produz uma continuação no GRU;
+5. recorta novos papéis (`Usuário:`, `Sistema:` etc.) e mede a sobreposição temática;
+6. descarta saudações genéricas, troca de papel, repetição extrema e texto sem relação com a pergunta;
+7. opcionalmente consolida pergunta e resposta como um novo episódio.
 
-Essa finalização é importante em modelos autoregressivos: sem ela, o modelo pode responder corretamente e continuar prevendo o próximo diálogo do corpus, parecendo pouco direto.
+Assim, `benchmark` executa uma medição real em vez de completar a palavra com uma saudação. Quando nem a base verificável nem o GRU possuem evidência, Cortex informa a limitação e sugere o GGUF local, sem pedir API.
 
-### D. Inferência aberta local para uso diário
+### D. Raciocínio nativo confiável
+
+`reasoner.cpp` normaliza português/UTF-8, classifica intenções por palavras inteiras e oferece respostas auditáveis sobre a própria arquitetura. Ele inclui um parser aritmético recursivo com precedência, parênteses, potência e proteção contra divisão por zero; um benchmark que mede o `forward` do checkpoint realmente carregado; e consulta explícita às memórias recuperadas. A camada não finge conhecer fatos fora da base. O filtro neural exige termos relevantes da pergunta e rejeita as saudações genéricas que o corpus pequeno tende a produzir.
+
+### E. Inferência aberta local para uso diário
 
 `LocalModelServer` inicia `llama-server` diretamente com `fork/exec` no Linux/macOS ou `CreateProcess` no Windows, sempre sem shell. Ele restringe a API a `127.0.0.1`, espera `/health` e `/v1/models`, supervisiona o processo e o encerra junto com Cortex. O primeiro uso de `-hf` baixa o GGUF para o cache do usuário; depois disso, a inferência funciona offline.
 
 O comando `--local` mede a RAM e escolhe um perfil conservador. Os pesos não são somados ao GRU: o Qwen passa a ser o **gerador ativo**, enquanto o núcleo próprio continua fornecendo memória, RAG, internet, segurança e fallback. Isso eleva a capacidade real de 1 milhão para bilhões de parâmetros sem tentar retreinar bilhões de pesos no computador do usuário.
 
-### E. Interface de conversa no navegador
+### F. Interface de conversa no navegador
 
 O comando `serve` inicia um servidor HTTP/1.1 escrito com sockets nativos em C++, ligado por padrão a `0.0.0.0:8080`. Ele entrega uma interface responsiva de chat, mantém as últimas mensagens no contexto curto e usa a memória vetorial para lembranças de longo prazo. HTML, CSS e JavaScript de navegador estão incorporados em `web_ui.cpp`; não há CDN, npm, Node.js ou arquivos web para instalar.
 
@@ -82,17 +89,17 @@ Endpoints locais:
 
 O parser HTTP limita cabeçalhos/corpos, exige `Content-Length`, rejeita transfer encoding e valida o JSON sem biblioteca externa. Um pool separado atende conexões para não bloquear o pool matemático. A resposta inclui CSP, `nosniff`, conteúdo UTF-8 sanitizado e nunca habilita CORS para origens externas.
 
-### F. API de linguagem e internet
+### G. Conectividade opcional e internet
 
-`LanguageApiClient` usa o mesmo protocolo OpenAI-compatible para o Qwen local, Gemini e outros provedores. O modelo GGUF em loopback não precisa de chave. APIs remotas continuam opcionais; nenhum segredo é aceito pela UI, argumento ou fonte e Bearer/corpo seguem por pipe `curl --config -`, sem aparecer no argv ou em arquivo temporário. Em qualquer falha, o sistema aciona o resultado web já obtido ou o GRU próprio como fallback seguro.
+`LanguageApiClient` usa o protocolo OpenAI-compatible para o Qwen local e preserva compatibilidade com provedores remotos. O modelo GGUF em loopback não precisa de chave. Provedores externos são **opt-in explícito**: até a presença isolada de `GEMINI_API_KEY` é ignorada sem `--gemini`. Nenhum segredo é aceito pela UI, argumento ou fonte; quando usado, Bearer/corpo segue por pipe `curl --config -`, sem aparecer no argv ou em arquivo temporário. Em qualquer falha, o sistema aciona o resultado web já obtido ou o Native Reasoner com filtro GRU.
 
 `InternetSearch` consulta por HTTPS a API Instant Answer do DuckDuckGo quando o usuário ativa **Pesquisar na internet**. Um resultado objetivo pode responder diretamente ou enriquecer a API linguística. A URL é fixa, respostas têm limite e HTTP remoto sem TLS é rejeitado. Isso não é um navegador irrestrito e reduz a superfície de SSRF.
 
-### G. Autoevolução controlada
+### H. Autoevolução controlada
 
 O sistema pode propor e aplicar mudanças ao próprio fonte, mas **não recebe permissão irrestrita**. Com `--enable-self-edit`, a interface libera um laboratório em duas etapas:
 
-1. uma API linguística recebe um único arquivo permitido e devolve sua substituição completa;
+1. o modelo GGUF local (ou um provedor opt-in) recebe um único arquivo permitido e propõe sua substituição completa;
 2. a pessoa revisa todo o conteúdo e digita `APLICAR ID`;
 3. o servidor verifica caminho, extensão, symlinks e hash contra alterações concorrentes;
 4. cria backup em `.cortex-backups/` e publica por escrita atômica;
@@ -119,6 +126,7 @@ cortex-native/
 │   ├── local_model.hpp               perfis GGUF e supervisor llama.cpp
 │   ├── memory.hpp                    contrato do vector store persistente
 │   ├── neural_model.hpp              GRU, treino, inferência e geração
+│   ├── reasoner.hpp                  respostas locais verificáveis e filtro lógico
 │   ├── self_editor.hpp               autoedição com revisão humana
 │   ├── tokenizer.hpp                 BPE byte-level
 │   └── web_server.hpp                contrato da interface HTTP nativa
@@ -130,6 +138,7 @@ cortex-native/
 │   ├── main.cpp                      CLI e validação de argumentos
 │   ├── memory.cpp                    cosseno paralelo e serialização
 │   ├── neural_model.cpp              forward, BPTT, Adam e sampling
+│   ├── reasoner.cpp                  intenções, cálculo, benchmark e relevância
 │   ├── self_editor.cpp               proposta, hash, backup e aplicação
 │   ├── tokenizer.cpp                 treino/encode/decode BPE
 │   ├── web_server.cpp                sockets, HTTP, JSON e API de chat
@@ -155,8 +164,8 @@ Compilação direta, caso `make` não esteja disponível:
 ```bash
 g++ -Iinclude -std=c++20 -O3 -DNDEBUG -march=native -flto -pthread \
   src/core.cpp src/tokenizer.cpp src/neural_model.cpp src/memory.cpp \
-  src/agent.cpp src/connectivity.cpp src/local_model.cpp src/self_editor.cpp \
-  src/web_server.cpp src/web_ui.cpp src/main.cpp -o cortex
+  src/agent.cpp src/connectivity.cpp src/local_model.cpp src/reasoner.cpp \
+  src/self_editor.cpp src/web_server.cpp src/web_ui.cpp src/main.cpp -o cortex
 ```
 
 No MinGW/Windows, acrescente `-lws2_32`; o `Makefile` detecta o Windows e faz isso automaticamente.
@@ -203,7 +212,7 @@ Depois de treinar, inicie a interface:
 ./build/cortex serve --state state --host 0.0.0.0 --port 8080
 ```
 
-Abra [http://localhost:8080](http://localhost:8080). A página permite conversar, iniciar uma nova conversa, ajustar temperatura/top-k/comprimento e ativar ou desativar a consolidação automática na memória. As dez mensagens mais recentes formam o contexto curto no navegador; episódios relevantes são recuperados da memória persistente pelo servidor.
+Abra [http://localhost:8080](http://localhost:8080). A página permite conversar, iniciar uma nova conversa, ajustar temperatura/top-k/comprimento e ativar a consolidação persistente quando ela for desejada. A memória automática começa desligada para não transformar saudações, benchmarks e testes em lembranças irrelevantes. As dez mensagens mais recentes continuam formando o contexto curto no navegador.
 
 Não execute esse comando diretamente na internet sem colocar autenticação, TLS, rate limiting e um proxy reverso à frente. O servidor embutido foi projetado para uso local, rede confiável e integração em desenvolvimento.
 
@@ -267,23 +276,23 @@ O chat usa o modo `/no_think` do Qwen3 por padrão para respostas diárias rápi
 
 Para máquinas comuns, 4B–14B já tornam o chat muito mais útil que o GRU demonstrativo. Modelos abertos com centenas de bilhões de parâmetros existem, mas exigem dezenas ou centenas de GiB de RAM/VRAM; combinar checkpoints menores não cria gratuitamente conhecimento equivalente a um modelo de fronteira.
 
-### Ativar qualidade Gemini opcionalmente
+### Compatibilidade Gemini — totalmente opcional
 
-Crie uma chave no [Google AI Studio](https://aistudio.google.com/apikey) e configure-a **somente no ambiente do processo**. Não cole a chave no chat, não a coloque na linha de comando e não a grave no repositório. Endpoint e modelo seguem a [compatibilidade OpenAI oficial do Gemini](https://ai.google.dev/gemini-api/docs/openai) e são autodetectados:
+Esta seção não é necessária para o funcionamento da Cortex. Somente quem optar explicitamente por um provedor remoto deve criar uma chave e ativar `--gemini`; definir a variável sozinha não muda o modo local. Não cole a chave no chat, não a coloque na linha de comando e não a grave no repositório.
 
 ```bash
 export GEMINI_API_KEY="SUA_CHAVE_NO_SEU_TERMINAL"
-./build/cortex serve --state state --host 0.0.0.0 --port 8080
+./build/cortex serve --state state --gemini
 ```
 
 PowerShell:
 
 ```powershell
 $env:GEMINI_API_KEY = "SUA_CHAVE_NO_SEU_TERMINAL"
-.\build\cortex.exe serve --state state --host 0.0.0.0 --port 8080
+.\build\cortex.exe serve --state state --gemini
 ```
 
-O atalho explícito `--gemini` tem o mesmo resultado e é útil para diagnosticar uma chave ausente. Os defaults são:
+O endpoint segue a compatibilidade OpenAI oficial; `--gemini` é sempre obrigatório para esse atalho. Os defaults são:
 
 ```text
 endpoint: https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
@@ -291,7 +300,7 @@ modelo:   gemini-3.7-flash
 esforço:  medium
 ```
 
-É possível trocar apenas o modelo com `GEMINI_MODEL`, o esforço com `GEMINI_REASONING_EFFORT=low|medium|high`, ou pela CLI com `--llm-model` e `--llm-reasoning`. A interface identifica **Gemini conectado** e aumenta o limite de resposta para 1024 tokens; se a chave não existir, estiver inválida ou a rede falhar, o GRU local continua atendendo e um aviso aparece no chat.
+É possível trocar o modelo com `GEMINI_MODEL`, o esforço com `GEMINI_REASONING_EFFORT=low|medium|high`, ou pela CLI com `--llm-model` e `--llm-reasoning`. Se a chave estiver ausente, inválida ou a rede falhar, o Native Reasoner e o fallback local continuam atendendo e um aviso aparece no chat.
 
 ### Usar outra API OpenAI-compatible
 
@@ -312,7 +321,7 @@ Também é possível usar Groq ou um servidor `llama.cpp` nativo local:
   --llm-model modelo-local
 ```
 
-Se a API cair, expirar ou exceder o timeout, a resposta volta ao modelo GRU local e a interface mostra o aviso. O botão **Pesquisar na internet** é independente e usa DuckDuckGo; desative toda conectividade com `--no-internet`.
+Se o provedor cair, expirar ou exceder o timeout, a resposta volta ao Native Reasoner com GRU filtrado e a interface mostra o aviso. O botão **Pesquisar na internet** é independente e usa DuckDuckGo; desative toda conectividade com `--no-internet`.
 
 ### Habilitar autoevolução controlada
 
@@ -320,11 +329,10 @@ Use apenas localmente e com o repositório sob controle de versão:
 
 ```bash
 ./build/cortex serve --state state --host 127.0.0.1 --port 8080 \
-  --llm-url URL_OPENAI_COMPATIVEL --llm-model MODELO \
-  --enable-self-edit --source-root .
+  --local --enable-self-edit --source-root .
 ```
 
-O botão **Autoevolução controlada** aparecerá. A API nunca aplica uma proposta sozinha: revisão e confirmação `APLICAR ID` são obrigatórias. Em seguida execute `make test && make release` e reinicie. Backups ficam em `.cortex-backups/` e não entram no Git.
+O botão **Autoevolução controlada** aparecerá. O modelo nunca aplica uma proposta sozinho: revisão e confirmação `APLICAR ID` são obrigatórias. Em seguida execute `make test && make release` e reinicie. Backups ficam em `.cortex-backups/` e não entram no Git.
 
 Geração neural direta pela CLI:
 
@@ -387,6 +395,8 @@ O carregamento verifica magic/version, dimensões máximas, formas e nomes dos p
 - checkpoint bit a bit e amostragem determinística;
 - ranking, persistência e remoção da memória vetorial;
 - configuração neural própria próxima de um milhão de parâmetros;
+- benchmark nativo, precedência aritmética, divisão por zero e consulta de memória;
+- rejeição da saudação aleatória para a entrada `benchmark` e fallback sem invenção;
 - perfis Qwen de 0,6B a 30,5B, seleção por RAM e argumentos seguros do launcher;
 - percent-encoding, JSON Unicode e bloqueio de HTTP remoto sem TLS;
 - presença dos controles de modelo local, API, internet e autoedição na interface;

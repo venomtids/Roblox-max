@@ -800,6 +800,23 @@ using JsonObject = std::unordered_map<std::string, JsonParser::Value>;
                         {}};
 }
 
+[[nodiscard]] std::string_view local_response_model_name(LocalResponseMode mode) noexcept {
+    switch (mode) {
+    case LocalResponseMode::benchmark: return "Benchmark C++20";
+    case LocalResponseMode::calculation: return "Calculadora C++20";
+    case LocalResponseMode::memory: return "Memória persistente";
+    case LocalResponseMode::knowledge: return "Cortex Native Reasoner";
+    case LocalResponseMode::safe_fallback: return "Filtro de relevância";
+    case LocalResponseMode::neural: return "GRU local";
+    }
+    return "Cortex local";
+}
+
+[[nodiscard]] bool is_native_tool(LocalResponseMode mode) noexcept {
+    return mode == LocalResponseMode::benchmark || mode == LocalResponseMode::calculation
+           || mode == LocalResponseMode::memory;
+}
+
 class WebRuntime final {
 public:
     WebRuntime(const BpeTokenizer& tokenizer,
@@ -874,7 +891,7 @@ private:
         const bool api_requested = !language_api_.config().endpoint.empty()
                                    && !language_api_.config().model.empty();
         const std::string_view language_provider = api_requested
-            ? std::string_view(language_api_.config().provider) : std::string_view("local-gru");
+            ? std::string_view(language_api_.config().provider) : std::string_view("local-hybrid");
         const std::string_view language_state = api_configured ? "ready"
                                                 : api_requested ? "missing-key"
                                                                 : "disabled";
@@ -891,7 +908,9 @@ private:
              << ",\"language_api_state\":" << json_escape(language_state)
              << ",\"language_provider\":" << json_escape(language_provider)
              << ",\"language_model\":"
-             << json_escape(api_requested ? display_model : std::string_view("local"))
+             << json_escape(api_requested ? display_model
+                                          : std::string_view("Cortex Native Reasoner + GRU"))
+             << ",\"native_reasoner\":true"
              << ",\"language_parameters\":" << language_api_.config().parameter_count
              << ",\"language_context\":" << language_api_.config().context_tokens
              << ",\"internet\":" << (options_.internet_enabled ? "true" : "false")
@@ -947,20 +966,41 @@ private:
                                       && options_.internet_enabled;
         CognitiveAgent agent(tokenizer_, model_, memory_);
         const auto started = std::chrono::steady_clock::now();
-        std::vector<MemoryHit> recalled = agent.recall(
-            message, agent_options.memory_hits, agent_options.minimum_memory_score);
+        std::vector<MemoryHit> recalled;
         InternetResult internet_result;
         std::string warning;
-        if (request_language_api && !language_api_.configured()
+        std::string answer;
+        std::string provider = "local-gru";
+        std::string provider_model = "GRU " + std::to_string(model_.config().layer_count)
+                                     + "x" + std::to_string(model_.config().hidden_size);
+        std::size_t generated_tokens = 0U;
+        std::uint64_t stored_memory_id = 0U;
+
+        // Ferramentas determinísticas sempre prevalecem, mesmo se um GGUF estiver conectado.
+        std::optional<NativeAnswer> direct_native = reason_locally(
+            message, conversation, model_);
+        if (direct_native && direct_native->mode == LocalResponseMode::memory) {
+            recalled = agent.recall(
+                message, agent_options.memory_hits, agent_options.minimum_memory_score);
+            direct_native = reason_locally(message, conversation, model_, recalled);
+        }
+        if (direct_native && is_native_tool(direct_native->mode)) {
+            answer = std::move(direct_native->text);
+            provider = std::string(local_response_mode_name(direct_native->mode));
+            provider_model = std::string(local_response_model_name(direct_native->mode));
+        }
+
+        if (answer.empty() && request_language_api && language_api_.configured()) {
+            // O modelo avançado recebe memórias; o caminho local busca dentro de respond().
+            recalled = agent.recall(
+                message, agent_options.memory_hits, agent_options.minimum_memory_score);
+        }
+        if (answer.empty() && request_language_api && !language_api_.configured()
             && !language_api_.config().endpoint.empty()
             && !language_api_.config().model.empty()) {
-            const bool gemini_requested = language_api_.config().provider == "gemini";
-            warning = gemini_requested
-                      ? "Gemini sem chave; configure GEMINI_API_KEY no ambiente e reinicie. "
-                        "Usando modelo local."
-                      : "API linguística sem chave; usando modelo local.";
+            warning = "Provedor opcional indisponível; usando somente o núcleo local.";
         }
-        if (request_internet) {
+        if (answer.empty() && request_internet) {
             try {
                 internet_result = internet_.search(message);
             } catch (const std::exception& exception) {
@@ -969,14 +1009,7 @@ private:
             }
         }
 
-        std::string answer;
-        std::string provider = "local-gru";
-        std::string provider_model = "GRU " + std::to_string(model_.config().layer_count)
-                                     + "x" + std::to_string(model_.config().hidden_size);
-        std::size_t generated_tokens = 0U;
-        std::uint64_t stored_memory_id = 0U;
-
-        if (request_language_api && language_api_.configured()) {
+        if (answer.empty() && request_language_api && language_api_.configured()) {
             try {
                 std::ostringstream enriched;
                 if (!conversation.empty()) {
@@ -1088,6 +1121,9 @@ private:
             generated_tokens = local.generated_tokens.size();
             stored_memory_id = local.stored_memory_id;
             recalled = std::move(local.recalled_memories);
+            provider = std::string(local_response_mode_name(local.response_mode));
+            provider_model = local.response_mode == LocalResponseMode::neural
+                ? provider_model : std::string(local_response_model_name(local.response_mode));
         } else if (agent_options.remember_interaction) {
             stored_memory_id = agent.remember(
                 "Usuário: " + message + "\nAssistente: " + answer);
@@ -1290,7 +1326,7 @@ void run_web_chat_server(const BpeTokenizer& tokenizer,
               << (runtime.language_api_configured()
                       ? (options.language_api.display_model.empty()
                              ? options.language_api.model : options.language_api.display_model)
-                      : "GRU local (fallback)")
+                      : "Cortex Native Reasoner + GRU")
               << " | internet: " << (options.internet_enabled ? "habilitada" : "desabilitada")
               << " | Ctrl+C para encerrar\n" << std::flush;
 
