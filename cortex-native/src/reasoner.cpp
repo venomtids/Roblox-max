@@ -481,8 +481,9 @@ private:
     static const std::set<std::string, std::less<>> stop_words{
         "a", "ao", "aos", "as", "como", "com", "da", "das", "de", "do", "dos",
         "e", "em", "essa", "esse", "esta", "este", "eu", "faz", "funciona", "me",
-        "meu", "minha", "na", "nas", "no", "nos", "o", "os", "para", "por", "qual",
-        "que", "se", "ser", "sobre", "um", "uma", "voce", "the", "what", "how", "is"
+        "busque", "internet", "meu", "minha", "na", "nas", "no", "nos", "o", "os",
+        "foi", "para", "pesquise", "pesquisar", "por", "procure", "qual", "que", "quem",
+        "se", "ser", "sobre", "um", "uma", "voce", "web", "the", "what", "how", "is"
     };
     std::set<std::string> result;
     for (std::string word : split_words(normalize_words(text))) {
@@ -491,7 +492,123 @@ private:
     return result;
 }
 
+[[nodiscard]] std::optional<NativeAnswer> recalled_web_knowledge(
+    std::string_view prompt,
+    std::span<const MemoryHit> memories) {
+    const std::set<std::string> query_words = content_words(prompt);
+    if (query_words.empty()) return std::nullopt;
+
+    const MemoryHit* best = nullptr;
+    std::size_t best_overlap = 0U;
+    for (const MemoryHit& memory : memories) {
+        if (!std::string_view(memory.text).starts_with("[WEB]")) continue;
+        const std::set<std::string> memory_words = content_words(memory.text);
+        std::size_t overlap = 0U;
+        for (const std::string& word : query_words) {
+            if (memory_words.contains(word)) ++overlap;
+        }
+        if (overlap > best_overlap) {
+            best = &memory;
+            best_overlap = overlap;
+        }
+    }
+    const std::size_t required_overlap = query_words.size() >= 2U ? 2U : 1U;
+    if (best == nullptr || best_overlap < required_overlap) return std::nullopt;
+
+    constexpr std::size_t prefix_size = 5U;
+    constexpr std::size_t maximum_answer_bytes = 2'048U;
+    std::string stored = best->text.substr(prefix_size);
+    if (stored.size() > maximum_answer_bytes) {
+        std::size_t boundary = maximum_answer_bytes;
+        while (boundary > 0U
+               && (static_cast<unsigned char>(stored[boundary]) & 0xC0U) == 0x80U) {
+            --boundary;
+        }
+        stored.resize(boundary);
+        stored += "…";
+    }
+    while (!stored.empty() && (stored.front() == '\r' || stored.front() == '\n'
+                               || stored.front() == ' ' || stored.front() == '\t')) {
+        stored.erase(0U, 1U);
+    }
+    return NativeAnswer{
+        "Conhecimento recuperado de uma pesquisa anterior:\n" + stored,
+        LocalResponseMode::web_knowledge};
+}
+
 } // namespace
+
+WebResearchRequest parse_web_research_request(std::string_view prompt) {
+    // Além do texto normalizado, conservamos o byte original de cada caractere
+    // dobrado. Assim reconhecemos maiúsculas/acentos/pontuação sem destruir uma
+    // consulta como "C++" ou alterar o que será enviado à fonte HTTPS.
+    std::string normalized;
+    std::vector<std::size_t> original_offsets;
+    normalized.reserve(prompt.size());
+    original_offsets.reserve(prompt.size());
+    bool pending_space = false;
+    std::size_t offset = 0U;
+    while (offset < prompt.size()) {
+        const std::size_t original_offset = offset;
+        const char folded = fold_latin_code_point(next_code_point(prompt, offset));
+        if (folded != '\0') {
+            if (pending_space && !normalized.empty()) {
+                normalized.push_back(' ');
+                original_offsets.push_back(original_offset);
+            }
+            normalized.push_back(folded);
+            original_offsets.push_back(original_offset);
+            pending_space = false;
+        } else {
+            pending_space = !normalized.empty();
+        }
+    }
+
+    constexpr std::array<std::string_view, 20U> prefixes{
+        "voce pode pesquisar ", "pesquise na internet por ", "pesquise na internet ", "pesquise na web por ",
+        "pesquise sobre ", "pesquise por ", "pesquise ",
+        "pesquisar na internet por ", "pesquisar na internet ", "pesquisar ",
+        "procure na internet por ", "procure na internet ", "procure sobre ",
+        "procure por ", "procure ", "busque na internet por ", "busque na internet ",
+        "busque por ", "busque ", "search "
+    };
+    for (const std::string_view prefix : prefixes) {
+        const std::string_view command = prefix.substr(0U, prefix.size() - 1U);
+        if (normalized != command && !normalized.starts_with(prefix)) continue;
+
+        // Avança a partir do último caractere do comando no texto original, não
+        // do primeiro caractere normalizável da consulta. Isso também preserva
+        // consultas compostas somente por emoji ou alfabetos não latinos.
+        std::size_t query_begin = original_offsets[command.size() - 1U];
+        static_cast<void>(next_code_point(prompt, query_begin));
+        while (query_begin < prompt.size()) {
+            const char character = prompt[query_begin];
+            if (character != ' ' && character != '\t' && character != '\r'
+                && character != '\n' && character != ':' && character != ','
+                && character != ';' && character != '=') {
+                break;
+            }
+            ++query_begin;
+        }
+        std::size_t query_end = prompt.size();
+        while (query_end > query_begin) {
+            const char character = prompt[query_end - 1U];
+            if (character != ' ' && character != '\t' && character != '\r'
+                && character != '\n') {
+                break;
+            }
+            --query_end;
+        }
+        return WebResearchRequest{
+            true, std::string(prompt.substr(query_begin, query_end - query_begin))};
+    }
+    if (normalized == "pesquise" || normalized == "pesquisar"
+        || normalized == "procure" || normalized == "busque"
+        || normalized == "search") {
+        return WebResearchRequest{true, {}};
+    }
+    return WebResearchRequest{false, {}};
+}
 
 std::optional<NativeAnswer> reason_locally(std::string_view prompt,
                                            std::string_view conversation_context,
@@ -499,6 +616,21 @@ std::optional<NativeAnswer> reason_locally(std::string_view prompt,
                                            std::span<const MemoryHit> memories) {
     const std::string normalized_prompt = normalize_words(prompt);
     if (normalized_prompt.empty()) return std::nullopt;
+
+    const WebResearchRequest research_request = parse_web_research_request(prompt);
+    if (research_request.explicit_request) {
+        if (std::optional<NativeAnswer> web = recalled_web_knowledge(prompt, memories)) {
+            return web;
+        }
+        return NativeAnswer{
+            research_request.query.empty()
+                ? "Diga o que devo pesquisar. Exemplo: `pesquise na internet por computação "
+                  "quântica`."
+                : "Reconheci o pedido de pesquisa. O transporte HTTPS sem chave está disponível "
+                  "no servidor web (`cortex serve`); este ciclo local não abrirá a rede nem "
+                  "inventará uma resposta.",
+            LocalResponseMode::safe_fallback};
+    }
 
     std::string intent = normalized_prompt;
     if (generic_follow_up(normalized_prompt) && !conversation_context.empty()) {
@@ -540,7 +672,7 @@ std::optional<NativeAnswer> reason_locally(std::string_view prompt,
         })) {
         return NativeAnswer{
             "Olá! Estou funcionando em modo local confiável. Posso executar um benchmark, "
-            "resolver cálculos, explicar a arquitetura ou consultar memórias.",
+            "resolver cálculos, pesquisar a internet com fontes ou consultar memórias.",
             LocalResponseMode::knowledge};
     }
     if (word_count <= 6U && contains_any(normalized_prompt, {
@@ -766,6 +898,9 @@ std::optional<NativeAnswer> reason_locally(std::string_view prompt,
             LocalResponseMode::knowledge};
     }
 
+    if (std::optional<NativeAnswer> web = recalled_web_knowledge(prompt, memories)) {
+        return web;
+    }
     return std::nullopt;
 }
 
@@ -818,6 +953,7 @@ std::string_view local_response_mode_name(LocalResponseMode mode) noexcept {
     case LocalResponseMode::calculation: return "local-calculator";
     case LocalResponseMode::benchmark: return "local-benchmark";
     case LocalResponseMode::memory: return "local-memory";
+    case LocalResponseMode::web_knowledge: return "local-web-knowledge";
     case LocalResponseMode::safe_fallback: return "local-safe";
     }
     return "local-safe";

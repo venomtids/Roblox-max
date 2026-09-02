@@ -172,17 +172,24 @@ AgentReply CognitiveAgent::respond(std::string_view prompt,
     } else {
         // Recuperação e inferência ficam desacopladas: memória pode crescer sem retreinar pesos.
         hits = recall(prompt, options.memory_hits, options.minimum_memory_score);
-        const std::vector<TokenId> context = bounded_context(
-            prompt, conversation_context, hits, options.maximum_context_tokens);
-        generated = model_.generate(context, options.generation);
-        std::string candidate = extract_direct_answer(tokenizer_.decode(generated));
-        if (neural_response_is_relevant(prompt, candidate)) {
-            answer = std::move(candidate);
+        if (std::optional<NativeAnswer> grounded = reason_locally(
+                prompt, conversation_context, model_, hits)) {
+            // Conhecimento web persistido pode responder offline sem voltar ao gerador aleatório.
+            answer = std::move(grounded->text);
+            response_mode = grounded->mode;
         } else {
-            NativeAnswer safe = safe_local_fallback();
-            answer = std::move(safe.text);
-            response_mode = safe.mode;
-            generated.clear(); // a continuação rejeitada não conta como resposta entregue.
+            const std::vector<TokenId> context = bounded_context(
+                prompt, conversation_context, hits, options.maximum_context_tokens);
+            generated = model_.generate(context, options.generation);
+            std::string candidate = extract_direct_answer(tokenizer_.decode(generated));
+            if (neural_response_is_relevant(prompt, candidate)) {
+                answer = std::move(candidate);
+            } else {
+                NativeAnswer safe = safe_local_fallback();
+                answer = std::move(safe.text);
+                response_mode = safe.mode;
+                generated.clear(); // a continuação rejeitada não conta como resposta entregue.
+            }
         }
     }
 

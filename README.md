@@ -4,7 +4,7 @@ Aplicativos nativos para Windows 10/11. **Não usam nem instalam Python, Node.js
 
 ## Projeto separado: Cortex Native AI
 
-O agente C++20 agora combina o núcleo próprio de 1 milhão de parâmetros com um reasoner local verificável, calculadora, benchmark real, filtro contra respostas aleatórias, memória persistente e modelos abertos Qwen3 de 0,6B a 30,5B via llama.cpp. Nenhuma API ou chave é necessária; provedores externos permanecem apenas como compatibilidade opt-in. Tudo está isolado em [`cortex-native/`](cortex-native/README.md), sem depender dos launchers Roblox, Python ou Node.js.
+O agente C++20 agora combina o núcleo próprio de 1 milhão de parâmetros com um reasoner local verificável, calculadora, benchmark real, filtro contra respostas aleatórias, memória persistente, pesquisa HTTPS sem chave (DuckDuckGo com fallback Wikipedia) e modelos abertos Qwen3 de 0,6B a 30,5B via llama.cpp. O comando `pesquise na internet por <assunto>` registra a fonte e guarda o resultado para reutilização offline. Nenhuma API ou chave é necessária; provedores externos permanecem apenas como compatibilidade opt-in. Tudo está isolado em [`cortex-native/`](cortex-native/README.md), sem depender dos launchers Roblox, Python ou Node.js.
 
 ## Bootstrapper Advanced — recomendado
 

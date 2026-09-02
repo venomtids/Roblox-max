@@ -1,6 +1,6 @@
 # Cortex Native AI
 
-Agente cognitivo e servidor **100% C++20**, sem Python, Node.js, npm, Docker ou bibliotecas fechadas. Sem configurar chave ou provedor, o núcleo local combina BPE, GRU/BPTT/Adam, memória, calculadora, benchmark real e o **Cortex Native Reasoner**, que reconhece intenções verificáveis e bloqueia continuações sem relação com a pergunta. Com `--local`, o mesmo executável supervisiona [llama.cpp](https://github.com/ggml-org/llama.cpp) e pesos GGUF do [Qwen3](https://huggingface.co/collections/Qwen/qwen3). A interface usa somente JavaScript de navegador embutido, sem runtime ou build Node.
+Agente cognitivo e servidor **100% C++20**, sem Python, Node.js, npm, Docker ou bibliotecas fechadas. Sem configurar chave ou provedor, o núcleo local combina BPE, GRU/BPTT/Adam, memória, pesquisa HTTPS com fontes, calculadora, benchmark real e o **Cortex Native Reasoner**, que reconhece intenções verificáveis e bloqueia continuações sem relação com a pergunta. Com `--local`, o mesmo executável supervisiona [llama.cpp](https://github.com/ggml-org/llama.cpp) e pesos GGUF do [Qwen3](https://huggingface.co/collections/Qwen/qwen3). A interface usa somente JavaScript de navegador embutido, sem runtime ou build Node.
 
 > **Nenhuma API ou chave é necessária.** O GRU de 1.003.428 parâmetros não possui conhecimento geral suficiente para ser usado sem controle: uma saída fluente pode estar errada. Por isso, tarefas determinísticas passam pelo reasoner e toda saída neural restante precisa superar um filtro de relevância; caso contrário Cortex admite o limite em vez de inventar. Para conhecimento amplo offline, o gerador pode ser trocado por um modelo aberto pré-treinado de **0,6B, 1,7B, 4B, 14,8B ou 30,5B parâmetros**. Não se afirma equivalência falsa a modelos de fronteira.
 
@@ -11,7 +11,8 @@ pergunta UTF-8
     │
     ├──► BPE + GRU próprio ──► embedding ──► memória vetorial persistente
     │                                              │
-    ├──► DuckDuckGo opcional ──► resumo + fonte ───┤
+    ├──► DuckDuckGo ──fallback Wikipedia──► fonte ─┤
+    │                         └──► memória [WEB] ───┤
     │                                              ▼
     └──────────────────────────────► contexto enriquecido
                                                    │
@@ -56,10 +57,11 @@ O `CognitiveAgent` executa um ciclo local com confiança explícita:
 1. classifica intenções que podem ser verificadas sem geração probabilística;
 2. executa benchmark, cálculo ou consulta de memória diretamente quando solicitado;
 3. para outros casos, vetoriza a pergunta e recupera episódios semanticamente próximos;
-4. monta um contexto limitado e produz uma continuação no GRU;
-5. recorta novos papéis (`Usuário:`, `Sistema:` etc.) e mede a sobreposição temática;
-6. descarta saudações genéricas, troca de papel, repetição extrema e texto sem relação com a pergunta;
-7. opcionalmente consolida pergunta e resposta como um novo episódio.
+4. reavalia os episódios e responde de forma determinística quando encontra conhecimento `[WEB]` pertinente;
+5. somente sem evidência, monta um contexto limitado e produz uma continuação no GRU;
+6. recorta novos papéis (`Usuário:`, `Sistema:` etc.) e mede a sobreposição temática;
+7. descarta saudações genéricas, troca de papel, repetição extrema e texto sem relação com a pergunta;
+8. opcionalmente consolida pergunta e resposta como um novo episódio.
 
 Assim, `benchmark` executa uma medição real em vez de completar a palavra com uma saudação. Quando nem a base verificável nem o GRU possuem evidência, Cortex informa a limitação e sugere o GGUF local, sem pedir API.
 
@@ -87,13 +89,15 @@ Endpoints locais:
 - `POST /api/code/apply` — aplicação confirmada com backup;
 - `GET /health` — health check simples.
 
-O parser HTTP limita cabeçalhos/corpos, exige `Content-Length`, rejeita transfer encoding e valida o JSON sem biblioteca externa. Um pool separado atende conexões para não bloquear o pool matemático. A resposta inclui CSP, `nosniff`, conteúdo UTF-8 sanitizado e nunca habilita CORS para origens externas.
+O parser HTTP limita cabeçalhos/corpos, exige `Content-Length`, rejeita transfer encoding e valida o JSON sem biblioteca externa. Um pool separado atende conexões para não bloquear o pool matemático. Cada resposta de chat informa `provider`/`provider_model`; pesquisas acrescentam `internet_source_name`, `internet_source` e `learned_from_web`, permitindo à interface distinguir internet ao vivo de `local-web-knowledge`. A resposta inclui CSP, `nosniff`, conteúdo UTF-8 sanitizado e nunca habilita CORS para origens externas.
 
 ### G. Conectividade opcional e internet
 
 `LanguageApiClient` usa o protocolo OpenAI-compatible para o Qwen local e preserva compatibilidade com provedores remotos. O modelo GGUF em loopback não precisa de chave. Provedores externos são **opt-in explícito**: até a presença isolada de `GEMINI_API_KEY` é ignorada sem `--gemini`. Nenhum segredo é aceito pela UI, argumento ou fonte; quando usado, Bearer/corpo segue por pipe `curl --config -`, sem aparecer no argv ou em arquivo temporário. Em qualquer falha, o sistema aciona o resultado web já obtido ou o Native Reasoner com filtro GRU.
 
-`InternetSearch` consulta por HTTPS a API Instant Answer do DuckDuckGo quando o usuário ativa **Pesquisar na internet**. Um resultado objetivo pode responder diretamente ou enriquecer a API linguística. A URL é fixa, respostas têm limite e HTTP remoto sem TLS é rejeitado. Isso não é um navegador irrestrito e reduz a superfície de SSRF.
+`InternetSearch` não requer chave: consulta por HTTPS o Instant Answer do DuckDuckGo e, quando ele não traz conteúdo, usa a API pública da Wikipedia em português como fallback. O comando **`pesquise na internet por <assunto>`** força a pesquisa mesmo com a opção automática da interface desligada. Um resultado objetivo responde diretamente ou fundamenta o modelo aberto; a resposta identifica o nome e a URL HTTPS da fonte.
+
+Toda pesquisa bem-sucedida é consolidada imediatamente na memória persistente com o marcador `[WEB]`, inclusive quando a memória automática de conversas está desligada. Em perguntas posteriores, o reasoner exige sobreposição lexical, recupera esse registro e o identifica como `local-web-knowledge`; assim o fato pesquisado pode ser reutilizado sem nova conexão. As URLs de consulta são fixas, consultas passam por percent-encoding, respostas possuem limites estritos e referências sem HTTPS são descartadas. Isso não é um navegador irrestrito e reduz a superfície de SSRF.
 
 ### H. Autoevolução controlada
 
@@ -212,7 +216,7 @@ Depois de treinar, inicie a interface:
 ./build/cortex serve --state state --host 0.0.0.0 --port 8080
 ```
 
-Abra [http://localhost:8080](http://localhost:8080). A página permite conversar, iniciar uma nova conversa, ajustar temperatura/top-k/comprimento e ativar a consolidação persistente quando ela for desejada. A memória automática começa desligada para não transformar saudações, benchmarks e testes em lembranças irrelevantes. As dez mensagens mais recentes continuam formando o contexto curto no navegador.
+Abra [http://localhost:8080](http://localhost:8080). A página permite conversar, iniciar uma nova conversa, ajustar temperatura/top-k/comprimento e ativar a consolidação persistente quando ela for desejada. Digite, por exemplo, **`pesquise na internet por Ada Lovelace`** para consultar uma fonte sem chave e guardar o resultado; depois, uma pergunta como **`quem foi Ada Lovelace?`** pode usar a cópia local. A memória automática começa desligada para não transformar saudações, benchmarks e testes em lembranças irrelevantes, mas toda pesquisa web bem-sucedida é sempre preservada como conhecimento. As dez mensagens mais recentes continuam formando o contexto curto no navegador.
 
 Não execute esse comando diretamente na internet sem colocar autenticação, TLS, rate limiting e um proxy reverso à frente. O servidor embutido foi projetado para uso local, rede confiável e integração em desenvolvimento.
 
@@ -321,7 +325,7 @@ Também é possível usar Groq ou um servidor `llama.cpp` nativo local:
   --llm-model modelo-local
 ```
 
-Se o provedor cair, expirar ou exceder o timeout, a resposta volta ao Native Reasoner com GRU filtrado e a interface mostra o aviso. O botão **Pesquisar na internet** é independente e usa DuckDuckGo; desative toda conectividade com `--no-internet`.
+Se o provedor cair, expirar ou exceder o timeout, a resposta volta ao Native Reasoner com GRU filtrado e a interface mostra o aviso. A opção **Pesquisar quando necessário** é independente e usa DuckDuckGo com fallback Wikipedia; o comando explícito funciona mesmo sem marcá-la. Desative toda conectividade com `--no-internet`.
 
 ### Habilitar autoevolução controlada
 

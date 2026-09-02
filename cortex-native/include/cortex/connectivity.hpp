@@ -95,11 +95,12 @@ struct InternetResult final {
     std::string heading;
     std::string summary;
     std::string source_url;
+    std::string source_name;
 
     [[nodiscard]] bool empty() const noexcept { return summary.empty(); }
 };
 
-// Pesquisa sem chave pela API Instant Answer do DuckDuckGo; falha gera fallback local.
+// Pesquisa sem chave: DuckDuckGo primeiro e Wikipedia em português como fallback.
 class InternetSearch final {
 public:
     explicit InternetSearch(NativeHttpClient http = NativeHttpClient{});

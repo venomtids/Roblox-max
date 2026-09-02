@@ -390,7 +390,7 @@ std::string_view web_chat_html() noexcept {
           <label class="switch"><input id="languageApi" type="checkbox" checked><span></span></label>
         </div>
         <div class="toggle-line">
-          <span>Pesquisar na internet</span>
+          <span>Pesquisar quando necessário</span>
           <label class="switch"><input id="internet" type="checkbox"><span></span></label>
         </div>
         <div class="toggle-line">
@@ -494,10 +494,10 @@ std::string_view web_chat_html() noexcept {
     let temperatureTouched = false;
 
     const suggestions = [
+      ["Pesquisar e aprender", "pesquise na internet por computação quântica"],
       ["Executar benchmark", "benchmark"],
       ["Testar cálculo local", "Quanto é 17 * (8 + 4) - 9?"],
-      ["Explique a arquitetura", "Como BPE, GRU e memória trabalham juntos?"],
-      ["Memória de longo prazo", "Como você armazena e recupera lembranças?"]
+      ["Explique a arquitetura", "Como BPE, GRU e memória trabalham juntos?"]
     ];
 
     function welcome() {
@@ -506,7 +506,7 @@ std::string_view web_chat_html() noexcept {
       root.className = "welcome";
       const inner = document.createElement("div");
       inner.className = "welcome-inner";
-      inner.innerHTML = '<div class="logo welcome-logo">C</div><h1>Converse com sua <span>IA nativa</span></h1><p>Benchmark, cálculos, memória e respostas técnicas funcionam sem API. <code>--local</code> adiciona um Qwen3 GGUF para conhecimento amplo.</p>';
+      inner.innerHTML = '<div class="logo welcome-logo">C</div><h1>Converse com sua <span>IA nativa</span></h1><p>Benchmark, cálculos e pesquisa HTTPS com fontes funcionam sem API. Use <code>pesquise na internet por…</code> para aprender e reutilizar o resultado offline.</p>';
       const grid = document.createElement("div");
       grid.className = "suggestions";
       for (const [title, text] of suggestions) {
@@ -678,10 +678,11 @@ std::string_view web_chat_html() noexcept {
         const recalled = Array.isArray(data.recalled) ? data.recalled.length : 0;
         const provider = data.provider === "local-open-model" ? `GGUF local · ${data.provider_model}`
           : data.provider === "language-api" ? `Provedor opcional · ${data.provider_model}`
-          : data.provider === "internet" ? "Internet"
+          : data.provider === "internet" ? `Internet · ${data.internet_source_name || data.provider_model || "fonte HTTPS"}`
           : String(data.provider || "").startsWith("local-") ? `Local · ${data.provider_model}`
           : "Cortex local";
-        const meta = `${provider} · ${data.latency_ms} ms${recalled ? ` · ${recalled} memória${recalled > 1 ? "s" : ""}` : ""}`;
+        const learned = data.learned_from_web ? " · salvo para uso offline" : "";
+        const meta = `${provider} · ${data.latency_ms} ms${recalled ? ` · ${recalled} memória${recalled > 1 ? "s" : ""}` : ""}${learned}`;
         appendMessage("assistant", data.reply || "O modelo encerrou a geração sem produzir texto.", meta);
         if (data.warning) showToast(data.warning);
         refreshStatus();

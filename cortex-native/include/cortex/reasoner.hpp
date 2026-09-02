@@ -19,6 +19,7 @@ enum class LocalResponseMode : std::uint8_t {
     calculation,
     benchmark,
     memory,
+    web_knowledge,
     safe_fallback
 };
 
@@ -26,6 +27,14 @@ struct NativeAnswer final {
     std::string text;
     LocalResponseMode mode = LocalResponseMode::knowledge;
 };
+
+struct WebResearchRequest final {
+    bool explicit_request = false;
+    std::string query;
+};
+
+// Reconhece comandos como "pesquise na internet por..." sem depender da UI.
+[[nodiscard]] WebResearchRequest parse_web_research_request(std::string_view prompt);
 
 // Resolve intenções verificáveis antes da geração probabilística: cálculos,
 // benchmark real, memória e conhecimento técnico da própria Cortex.

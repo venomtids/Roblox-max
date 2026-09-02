@@ -805,6 +805,7 @@ using JsonObject = std::unordered_map<std::string, JsonParser::Value>;
     case LocalResponseMode::benchmark: return "Benchmark C++20";
     case LocalResponseMode::calculation: return "Calculadora C++20";
     case LocalResponseMode::memory: return "Memória persistente";
+    case LocalResponseMode::web_knowledge: return "Conhecimento web salvo";
     case LocalResponseMode::knowledge: return "Cortex Native Reasoner";
     case LocalResponseMode::safe_fallback: return "Filtro de relevância";
     case LocalResponseMode::neural: return "GRU local";
@@ -962,8 +963,12 @@ private:
                                                                      std::memory_order_relaxed);
 
         const bool request_language_api = optional_json_bool(object, "language_api", true);
-        const bool request_internet = optional_json_bool(object, "internet", false)
+        const WebResearchRequest research_request = parse_web_research_request(message);
+        const bool request_internet = (optional_json_bool(object, "internet", false)
+                                       || research_request.explicit_request)
                                       && options_.internet_enabled;
+        const std::string& internet_query = research_request.explicit_request
+            ? research_request.query : message;
         CognitiveAgent agent(tokenizer_, model_, memory_);
         const auto started = std::chrono::steady_clock::now();
         std::vector<MemoryHit> recalled;
@@ -975,10 +980,26 @@ private:
                                      + "x" + std::to_string(model_.config().hidden_size);
         std::size_t generated_tokens = 0U;
         std::uint64_t stored_memory_id = 0U;
+        bool learned_from_web = false;
+        bool internet_failed = false;
 
-        // Ferramentas determinísticas sempre prevalecem, mesmo se um GGUF estiver conectado.
-        std::optional<NativeAnswer> direct_native = reason_locally(
-            message, conversation, model_);
+        if (research_request.explicit_request && research_request.query.empty()) {
+            answer = "Diga o que devo pesquisar. Exemplo: `pesquise na internet por computação "
+                     "quântica`.";
+            provider = "local-reasoner";
+            provider_model = "Cortex Native Reasoner";
+        } else if (research_request.explicit_request && !options_.internet_enabled) {
+            answer = "A pesquisa está desativada neste servidor. Reinicie sem `--no-internet` para "
+                     "permitir consultas HTTPS sem chave.";
+            provider = "local-safe";
+            provider_model = "Política de conectividade";
+        }
+
+        // Ferramentas determinísticas prevalecem, exceto quando o usuário pede pesquisa explícita.
+        std::optional<NativeAnswer> direct_native;
+        if (answer.empty() && !research_request.explicit_request) {
+            direct_native = reason_locally(message, conversation, model_);
+        }
         if (direct_native && direct_native->mode == LocalResponseMode::memory) {
             recalled = agent.recall(
                 message, agent_options.memory_hits, agent_options.minimum_memory_score);
@@ -1002,11 +1023,21 @@ private:
         }
         if (answer.empty() && request_internet) {
             try {
-                internet_result = internet_.search(message);
+                internet_result = internet_.search(internet_query);
             } catch (const std::exception& exception) {
+                internet_failed = true;
                 if (!warning.empty()) warning += "; ";
                 warning += "internet indisponível: " + std::string(exception.what());
             }
+        }
+        if (answer.empty() && research_request.explicit_request
+            && request_internet && internet_result.empty()) {
+            answer = internet_failed
+                ? "Não consegui acessar as fontes de pesquisa neste momento."
+                : "Pesquisei no DuckDuckGo e na Wikipedia em português, mas não encontrei um "
+                  "resultado objetivo para essa consulta.";
+            provider = "internet";
+            provider_model = "Pesquisa web sem resultado";
         }
 
         if (answer.empty() && request_language_api && language_api_.configured()) {
@@ -1024,9 +1055,11 @@ private:
                 }
                 if (!internet_result.empty()) {
                     enriched << "INFORMAÇÃO RECENTE DA INTERNET:\n"
-                             << internet_result.heading << " — " << internet_result.summary;
+                             << internet_result.heading << " — " << internet_result.summary
+                             << "\nFonte: " << (internet_result.source_name.empty()
+                                 ? std::string("fonte HTTPS") : internet_result.source_name);
                     if (!internet_result.source_url.empty()) {
-                        enriched << "\nFonte: " << internet_result.source_url;
+                        enriched << " — " << internet_result.source_url;
                     }
                     enriched << "\n\n";
                 }
@@ -1104,12 +1137,33 @@ private:
             }
         }
 
-        // Sem uma API linguística, um resultado web objetivo ainda é melhor que inventar.
+        if (!internet_result.empty()) {
+            std::ostringstream knowledge;
+            knowledge << "[WEB]\nConsulta: " << internet_query
+                      << "\nFonte: " << internet_result.source_name;
+            if (!internet_result.source_url.empty()) {
+                knowledge << "\nURL: " << internet_result.source_url;
+            }
+            if (!internet_result.heading.empty()) {
+                knowledge << "\nTítulo: " << internet_result.heading;
+            }
+            knowledge << "\nConteúdo: " << internet_result.summary;
+            stored_memory_id = agent.remember(sanitize_utf8(knowledge.str()));
+            learned_from_web = true;
+        }
+
+        // Sem um modelo linguístico, um resultado web objetivo ainda é melhor que inventar.
         if (answer.empty() && request_internet && !internet_result.empty()) {
-            answer = internet_result.summary;
-            if (!internet_result.source_url.empty()) answer += "\n\nFonte: " + internet_result.source_url;
+            if (!internet_result.heading.empty()) answer = internet_result.heading + "\n\n";
+            answer += internet_result.summary;
+            answer += "\n\nFonte: " + (internet_result.source_name.empty()
+                ? std::string("fonte HTTPS") : internet_result.source_name);
+            if (!internet_result.source_url.empty()) {
+                answer += " — " + internet_result.source_url;
+            }
             provider = "internet";
-            provider_model = "DuckDuckGo Instant Answer";
+            provider_model = internet_result.source_name.empty()
+                ? "Pesquisa web" : internet_result.source_name;
         }
 
         if (answer.empty()) {
@@ -1124,7 +1178,26 @@ private:
             provider = std::string(local_response_mode_name(local.response_mode));
             provider_model = local.response_mode == LocalResponseMode::neural
                 ? provider_model : std::string(local_response_model_name(local.response_mode));
-        } else if (agent_options.remember_interaction) {
+        }
+
+        // Mesmo quando um GGUF redige a resposta, a procedência da informação web
+        // continua visível e não depende de o modelo obedecer ao pedido de citação.
+        if (!internet_result.empty() && provider != "internet") {
+            const bool citation_present = (!internet_result.source_url.empty()
+                                           && answer.find(internet_result.source_url)
+                                                  != std::string::npos)
+                                          || (!internet_result.source_name.empty()
+                                              && answer.find(internet_result.source_name)
+                                                     != std::string::npos);
+            if (!citation_present) {
+                answer += "\n\nFonte da pesquisa: " + (internet_result.source_name.empty()
+                    ? std::string("fonte HTTPS") : internet_result.source_name);
+                if (!internet_result.source_url.empty()) {
+                    answer += " — " + internet_result.source_url;
+                }
+            }
+        }
+        if (agent_options.remember_interaction && stored_memory_id == 0U) {
             stored_memory_id = agent.remember(
                 "Usuário: " + message + "\nAssistente: " + answer);
         }
@@ -1143,6 +1216,8 @@ private:
              << ",\"memory_id\":" << stored_memory_id
              << ",\"latency_ms\":" << elapsed_ms
              << ",\"internet_source\":" << json_escape(internet_result.source_url)
+             << ",\"internet_source_name\":" << json_escape(internet_result.source_name)
+             << ",\"learned_from_web\":" << (learned_from_web ? "true" : "false")
              << ",\"warning\":" << json_escape(warning)
              << ",\"recalled\":[";
         for (std::size_t index = 0U; index < recalled.size(); ++index) {

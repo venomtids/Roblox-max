@@ -42,6 +42,32 @@ struct ProcessResult final {
     return std::string(text.substr(0U, limit)) + "…";
 }
 
+void truncate_utf8(std::string& text, std::size_t maximum_bytes) {
+    if (text.size() <= maximum_bytes) return;
+    std::size_t boundary = maximum_bytes;
+    while (boundary > 0U
+           && (static_cast<unsigned char>(text[boundary]) & 0xC0U) == 0x80U) {
+        --boundary;
+    }
+    text.resize(boundary);
+}
+
+void limit_internet_result(InternetResult& result) {
+    truncate_utf8(result.heading, 512U);
+    truncate_utf8(result.summary, 8U * 1024U);
+    truncate_utf8(result.source_url, 2U * 1024U);
+    // URLs vindas do documento remoto são dados não confiáveis. Só exibimos e
+    // persistimos uma referência HTTPS sintaticamente aceita pelo mesmo cliente.
+    if (!result.source_url.empty()) {
+        try {
+            NativeHttpClient::validate_url(result.source_url);
+            if (!result.source_url.starts_with("https://")) result.source_url.clear();
+        } catch (const Error&) {
+            result.source_url.clear();
+        }
+    }
+}
+
 // Valores sensíveis seguem pelo stdin de `curl --config -`, nunca pela linha de
 // comando visível a outros processos. O quoting abaixo é o formato nativo do curl.
 [[nodiscard]] std::string curl_config_quote(std::string_view value) {
@@ -685,27 +711,69 @@ InternetResult InternetSearch::search(std::string_view query) const {
     if (query.empty() || query.size() > 1'024U) {
         throw Error("consulta de internet vazia ou grande demais");
     }
-    const std::string url = "https://api.duckduckgo.com/?q=" + url_encode(query)
-        + "&format=json&no_html=1&no_redirect=1&skip_disambig=1&kl=br-pt";
-    const NativeHttpResponse response = http_.get(url, 12U, 1U * 1024U * 1024U);
-    if (response.status < 200L || response.status >= 300L) {
-        throw Error("pesquisa web retornou HTTP " + std::to_string(response.status));
+
+    bool source_reached = false;
+    std::string failures;
+    try {
+        const std::string url = "https://api.duckduckgo.com/?q=" + url_encode(query)
+            + "&format=json&no_html=1&no_redirect=1&skip_disambig=1&kl=br-pt";
+        const NativeHttpResponse response = http_.get(url, 12U, 1U * 1024U * 1024U);
+        if (response.status < 200L || response.status >= 300L) {
+            throw Error("DuckDuckGo retornou HTTP " + std::to_string(response.status));
+        }
+        source_reached = true;
+        InternetResult result;
+        result.source_name = "DuckDuckGo";
+        result.heading = json_string_field(response.body, "Heading").value_or("");
+        result.summary = json_string_field(response.body, "AbstractText").value_or("");
+        result.source_url = json_string_field(response.body, "AbstractURL").value_or("");
+        if (result.summary.empty()) {
+            result.summary = json_string_field(response.body, "Answer").value_or("");
+        }
+        if (result.summary.empty()) {
+            result.summary = json_string_field(response.body, "Text").value_or("");
+            if (result.source_url.empty()) {
+                result.source_url = json_string_field(response.body, "FirstURL").value_or("");
+            }
+        }
+        if (!result.empty()) {
+            limit_internet_result(result);
+            return result;
+        }
+    } catch (const std::exception& exception) {
+        failures = exception.what();
     }
 
-    InternetResult result;
-    result.heading = json_string_field(response.body, "Heading").value_or("");
-    result.summary = json_string_field(response.body, "AbstractText").value_or("");
-    result.source_url = json_string_field(response.body, "AbstractURL").value_or("");
-    if (result.summary.empty()) {
-        result.summary = json_string_field(response.body, "Answer").value_or("");
-    }
-    if (result.summary.empty()) {
-        result.summary = json_string_field(response.body, "Text").value_or("");
-        if (result.source_url.empty()) {
-            result.source_url = json_string_field(response.body, "FirstURL").value_or("");
+    try {
+        const std::string url =
+            "https://pt.wikipedia.org/w/api.php?action=query&generator=search&gsrnamespace=0"
+            "&gsrlimit=1&prop=extracts%7Cinfo&exintro=1&explaintext=1&inprop=url"
+            "&format=json&formatversion=2&redirects=1&gsrsearch=" + url_encode(query);
+        const NativeHttpResponse response = http_.get(url, 12U, 1U * 1024U * 1024U);
+        if (response.status < 200L || response.status >= 300L) {
+            throw Error("Wikipedia retornou HTTP " + std::to_string(response.status));
         }
+        source_reached = true;
+        InternetResult result;
+        result.source_name = "Wikipedia (pt)";
+        result.heading = json_string_field(response.body, "title").value_or("");
+        result.summary = json_string_field(response.body, "extract").value_or("");
+        result.source_url = json_string_field(response.body, "fullurl").value_or("");
+        if (!result.empty()) {
+            limit_internet_result(result);
+            return result;
+        }
+    } catch (const std::exception& exception) {
+        if (!failures.empty()) failures += "; ";
+        failures += exception.what();
     }
-    return result;
+
+    if (!failures.empty()) {
+        throw Error((source_reached
+            ? std::string("pesquisa incompleta; uma fonte não respondeu: ")
+            : std::string("fontes de pesquisa indisponíveis: ")) + failures);
+    }
+    return {};
 }
 
 } // namespace cortex

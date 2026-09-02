@@ -164,6 +164,30 @@ void test_language_api_payload(const std::string& test_executable) {
     expect(rejected, "cliente rejeita reasoning_effort não suportado antes da rede");
 }
 
+void test_internet_search_fallback(const std::string& test_executable) {
+    set_environment("CORTEX_TEST_FAKE_WEB", "duckduckgo-answer");
+    const cortex::InternetSearch search{
+        cortex::NativeHttpClient(test_executable)};
+    const cortex::InternetResult primary = search.search("Ada Lovelace C++");
+    clear_environment("CORTEX_TEST_FAKE_WEB");
+    expect(primary.source_name == "DuckDuckGo"
+               && primary.summary == "Resposta instantânea verificável"
+               && primary.source_url == "https://example.org/fonte",
+           "pesquisa usa resposta instantânea HTTPS do DuckDuckGo quando disponível");
+
+    set_environment("CORTEX_TEST_FAKE_WEB", "wikipedia-fallback");
+    const cortex::InternetResult result = search.search("Ada Lovelace C++");
+    clear_environment("CORTEX_TEST_FAKE_WEB");
+
+    expect(result.source_name == "Wikipedia (pt)",
+           "pesquisa tenta Wikipedia quando DuckDuckGo não possui resposta");
+    expect(result.heading == "Ada Lovelace"
+               && result.summary.find("primeiro algoritmo") != std::string::npos,
+           "fallback sem chave extrai título e resumo objetivo");
+    expect(result.source_url == "https://pt.wikipedia.org/wiki/Ada_Lovelace",
+           "pesquisa preserva somente a URL HTTPS da fonte");
+}
+
 void test_matrix() {
     cortex::Matrix matrix(2U, 3U);
     matrix(0U, 0U) = 1.0F;
@@ -278,6 +302,21 @@ void test_native_reasoner() {
     config.seed = 77U;
     const cortex::NeuralLanguageModel model(config);
 
+    const cortex::WebResearchRequest research = cortex::parse_web_research_request(
+        "Pesquise na internet por: Ada Lovelace e C++  ");
+    expect(research.explicit_request && research.query == "Ada Lovelace e C++",
+           "parser reconhece pesquisa explícita e preserva a consulta original");
+    const cortex::WebResearchRequest empty_research =
+        cortex::parse_web_research_request("pesquise na internet por:");
+    expect(empty_research.explicit_request && empty_research.query.empty(),
+           "parser distingue comando de pesquisa sem assunto");
+    const cortex::WebResearchRequest unicode_research =
+        cortex::parse_web_research_request("busque na internet por 🚀");
+    expect(unicode_research.explicit_request && unicode_research.query == "🚀",
+           "parser mantém consulta UTF-8 mesmo sem caracteres latinos");
+    expect(!cortex::parse_web_research_request("explique a internet").explicit_request,
+           "menção comum à internet não ativa pesquisa explícita");
+
     const auto benchmark = cortex::reason_locally("benchmark", {}, model);
     expect(benchmark && benchmark->mode == cortex::LocalResponseMode::benchmark
                && benchmark->text.find("Benchmark local concluído") != std::string::npos
@@ -294,6 +333,13 @@ void test_native_reasoner() {
                && integrated.generated_tokens.empty()
                && integrated.text.find("Benchmark local concluído") != std::string::npos,
            "CognitiveAgent prioriza ferramenta nativa e não amostra o GRU para benchmark");
+    const cortex::AgentReply research_without_transport = agent.respond(
+        "pesquise na internet por Ada Lovelace", agent_options);
+    expect(research_without_transport.response_mode == cortex::LocalResponseMode::safe_fallback
+               && research_without_transport.generated_tokens.empty()
+               && research_without_transport.text.find("Reconheci o pedido de pesquisa")
+                      != std::string::npos,
+           "agente reconhece intenção web antes do GRU quando não possui transporte HTTP");
     agent_options.generation.maximum_tokens = 24U;
     agent_options.maximum_context_tokens = 64U;
     const cortex::AgentReply unknown = agent.respond(
@@ -334,6 +380,23 @@ void test_native_reasoner() {
                && memory->text.find("Vim") != std::string::npos,
            "consulta explícita devolve memória persistente recuperada");
 
+    const std::array<cortex::MemoryHit, 2U> web_memories{{
+        cortex::MemoryHit{7U, 0U, 0.93F,
+            "[WEB]\nConsulta: Ada Lovelace\nFonte: Wikipedia (pt)\n"
+            "URL: https://pt.wikipedia.org/wiki/Ada_Lovelace\n"
+            "Conteúdo: Ada Lovelace publicou o primeiro algoritmo."},
+        cortex::MemoryHit{8U, 0U, 0.99F, "Usuário: texto sem procedência web"}
+    }};
+    const auto learned_web = cortex::reason_locally(
+        "Quem foi Ada Lovelace?", {}, model, web_memories);
+    expect(learned_web && learned_web->mode == cortex::LocalResponseMode::web_knowledge
+               && learned_web->text.find("primeiro algoritmo") != std::string::npos
+               && learned_web->text.find("Wikipedia (pt)") != std::string::npos,
+           "reasoner reutiliza pesquisa persistida como conhecimento offline fundamentado");
+    expect(cortex::local_response_mode_name(cortex::LocalResponseMode::web_knowledge)
+               == "local-web-knowledge",
+           "resposta offline identifica o mecanismo que forneceu o conhecimento");
+
     expect(!cortex::neural_response_is_relevant(
                "benchmark", "Olá! Estou pronta para responder. Como posso ajudar?"),
            "filtro rejeita exatamente a resposta desconectada relatada pelo usuário");
@@ -369,6 +432,9 @@ void test_embedded_web_interface() {
     expect(html.find("Executar benchmark") != std::string_view::npos
                && html.find("Testar cálculo local") != std::string_view::npos,
            "interface oferece ações locais que produzem resultados verificáveis");
+    expect(html.find("pesquise na internet por computação quântica") != std::string_view::npos
+               && html.find("salvo para uso offline") != std::string_view::npos,
+           "interface ensina a pesquisa sem chave e sinaliza aprendizado persistente");
     expect(html.find("id=\"remember\" type=\"checkbox\" checked")
                == std::string_view::npos,
            "memória automática inicia desligada para evitar episódios irrelevantes");
@@ -402,6 +468,38 @@ void test_long_term_memory(const fs::path& directory) {
 } // namespace
 
 int main(int argc, char** argv) {
+    // O próprio binário também simula as duas fontes HTTPS. DuckDuckGo devolve
+    // JSON vazio e a segunda chamada só responde se a consulta chegou codificada.
+    if (const char* fake_web = std::getenv("CORTEX_TEST_FAKE_WEB"); fake_web != nullptr) {
+        const std::string_view mode(fake_web);
+        std::string url;
+        for (int index = 1; index + 1 < argc; ++index) {
+            if (std::string_view(argv[index]) == "--url") {
+                url = argv[index + 1];
+                break;
+            }
+        }
+        if (url.find("api.duckduckgo.com") != std::string::npos) {
+            if (mode == "duckduckgo-answer") {
+                std::cout << R"({"Heading":"Ada Lovelace","AbstractText":"Resposta instantânea verificável","AbstractURL":"https://example.org/fonte"})"
+                          << "\n__CORTEX_HTTP_STATUS__:200";
+            } else {
+                std::cout << "{\"Heading\":\"\",\"AbstractText\":\"\",\"Answer\":\"\"}"
+                             "\n__CORTEX_HTTP_STATUS__:200";
+            }
+            return 0;
+        }
+        const bool wikipedia = url.find("pt.wikipedia.org/w/api.php") != std::string::npos;
+        const bool encoded_query = url.find("Ada%20Lovelace%20C%2B%2B") != std::string::npos;
+        if (wikipedia && encoded_query) {
+            std::cout << R"({"query":{"pages":[{"pageid":123,"title":"Ada Lovelace","extract":"Ada Lovelace publicou o primeiro algoritmo destinado a uma máquina.","fullurl":"https://pt.wikipedia.org/wiki/Ada_Lovelace"}]}})"
+                      << "\n__CORTEX_HTTP_STATUS__:200";
+            return 0;
+        }
+        std::cout << "{}\n__CORTEX_HTTP_STATUS__:404";
+        return 0;
+    }
+
     // O próprio binário simula curl em um subprocesso: nenhum servidor ou script externo
     // é necessário para validar o JSON OpenAI-compatible e o header de autenticação.
     if (std::getenv("CORTEX_TEST_FAKE_CURL") != nullptr) {
@@ -441,6 +539,7 @@ int main(int argc, char** argv) {
         test_connectivity_protocol();
         test_open_model_profiles();
         test_language_api_payload(argc > 0 ? argv[0] : "./build/cortex-tests");
+        test_internet_search_fallback(argc > 0 ? argv[0] : "./build/cortex-tests");
         test_matrix();
         test_tokenizer(directory);
         test_neural_training_and_checkpoint(directory);
