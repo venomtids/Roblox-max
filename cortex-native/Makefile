@@ -17,7 +17,7 @@ TEST_SRC := $(SRC) tests/test_main.cpp
 
 # Winsock é parte nativa do Windows; Linux/macOS não precisam de biblioteca adicional.
 ifeq ($(OS),Windows_NT)
-LDLIBS += -lws2_32
+LDLIBS += -lws2_32 -lshell32
 endif
 
 .PHONY: all release debug test sanitize-test clean

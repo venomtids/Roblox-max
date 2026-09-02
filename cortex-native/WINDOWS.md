@@ -37,7 +37,7 @@ Para o modo que pode criar/substituir qualquer arquivo e executar validações a
 start-windows-system.cmd
 ```
 
-O Windows exibirá o prompt UAC antes de conceder privilégios administrativos à sessão.
+O próprio `cortex.exe` usa a API nativa `ShellExecuteExW` para exibir o prompt UAC antes de conceder privilégios administrativos à sessão; não há PowerShell, Python ou Node nesse fluxo.
 
 `build-windows.cmd` compila os testes e só gera `build\cortex.exe` quando eles passam. `start-windows.cmd`:
 

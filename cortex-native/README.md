@@ -214,7 +214,7 @@ g++ -Iinclude -std=c++20 -O3 -DNDEBUG -march=native -flto -pthread \
   src/web_ui.cpp src/main.cpp -o cortex
 ```
 
-No MinGW/Windows, acrescente `-lws2_32`; o `Makefile` detecta o Windows. Use `build-windows.cmd`; veja [WINDOWS.md](WINDOWS.md). Um workflow MinGW-w64 pronto para copiar para `.github/workflows/` está em `ci/cortex-windows.yml.example`.
+No MinGW/Windows, acrescente `-lws2_32 -lshell32`; o `Makefile` detecta o Windows. Use `build-windows.cmd`; veja [WINDOWS.md](WINDOWS.md). Um workflow MinGW-w64 pronto para copiar para `.github/workflows/` está em `ci/cortex-windows.yml.example`.
 
 Para depurar memória e comportamento indefinido:
 

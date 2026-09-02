@@ -20,10 +20,82 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <shellapi.h>
+#endif
+
 namespace {
 
 using cortex::Error;
 namespace fs = std::filesystem;
+
+[[nodiscard]] bool relaunch_elevated_for_system_mode(int argc, char** argv) {
+#ifdef _WIN32
+    if (argc < 2 || std::string_view(argv[1]) != "serve") return false;
+    bool requested = false;
+    for (int index = 1; index < argc; ++index) {
+        const std::string_view argument(argv[index]);
+        if (argument == "--unrestricted-self-edit"
+            || argument.starts_with("--unrestricted-self-edit=")) {
+            requested = true;
+            break;
+        }
+    }
+    if (!requested) return false;
+
+    HANDLE token = nullptr;
+    if (::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token) == 0) {
+        throw Error("Windows não permitiu consultar o estado UAC");
+    }
+    TOKEN_ELEVATION elevation{};
+    DWORD returned = 0U;
+    const BOOL queried = ::GetTokenInformation(
+        token, TokenElevation, &elevation, static_cast<DWORD>(sizeof(elevation)), &returned);
+    ::CloseHandle(token);
+    if (queried == 0) throw Error("Windows não informou o estado UAC");
+    if (elevation.TokenIsElevated != 0U) return false;
+
+    std::vector<wchar_t> executable(32'768U, L'\0');
+    const DWORD length = ::GetModuleFileNameW(
+        nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+    if (length == 0U || static_cast<std::size_t>(length) >= executable.size()) {
+        throw Error("não foi possível localizar cortex.exe para solicitar UAC");
+    }
+
+    const wchar_t* parameters = ::GetCommandLineW();
+    if (*parameters == L'"') {
+        ++parameters;
+        while (*parameters != L'\0' && *parameters != L'"') ++parameters;
+        if (*parameters == L'"') ++parameters;
+    } else {
+        while (*parameters != L'\0' && *parameters != L' ' && *parameters != L'\t') ++parameters;
+    }
+    while (*parameters == L' ' || *parameters == L'\t') ++parameters;
+
+    SHELLEXECUTEINFOW launch{};
+    launch.cbSize = static_cast<DWORD>(sizeof(launch));
+    launch.fMask = SEE_MASK_NOCLOSEPROCESS;
+    launch.lpVerb = L"runas";
+    launch.lpFile = executable.data();
+    launch.lpParameters = parameters;
+    launch.nShow = SW_SHOWNORMAL;
+    if (::ShellExecuteExW(&launch) == 0) {
+        throw Error("permissão UAC negada ou falha ao elevar cortex.exe (erro "
+                    + std::to_string(::GetLastError()) + ")");
+    }
+    if (launch.hProcess != nullptr) ::CloseHandle(launch.hProcess);
+    std::cout << "Solicitação UAC aceita; a Cortex continuará na janela elevada.\n";
+    return true;
+#else
+    static_cast<void>(argc);
+    static_cast<void>(argv);
+    return false;
+#endif
+}
 
 class Arguments final {
 public:
@@ -727,6 +799,7 @@ int main(int argc, char** argv) {
             print_help();
             return EXIT_SUCCESS;
         }
+        if (relaunch_elevated_for_system_mode(argc, argv)) return EXIT_SUCCESS;
         const std::string command = argv[1];
         const Arguments arguments(argc, argv, 2);
         if (command == "help" || command == "--help" || command == "-h") {
