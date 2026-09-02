@@ -14,3 +14,4 @@ cortex-native/models/
 cortex-native/runtime/
 cortex-native/*.gguf
 cortex-native/.cortex-backups/
+cortex-native/.cortex-validation/

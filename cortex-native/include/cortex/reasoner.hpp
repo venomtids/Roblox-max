@@ -20,6 +20,9 @@ enum class LocalResponseMode : std::uint8_t {
     benchmark,
     memory,
     web_knowledge,
+    curated_knowledge,
+    text_analysis,
+    self_analysis,
     safe_fallback
 };
 

@@ -2,6 +2,7 @@
 
 #include "cortex/memory.hpp"
 #include "cortex/neural_model.hpp"
+#include "cortex/quality.hpp"
 #include "cortex/reasoner.hpp"
 #include "cortex/tokenizer.hpp"
 
@@ -13,9 +14,10 @@
 namespace cortex {
 
 struct AgentOptions final {
-    std::size_t memory_hits = 3U;
+    PowerMode power_mode = PowerMode::medium;
+    std::size_t memory_hits = 6U;
     float minimum_memory_score = 0.65F;
-    std::size_t maximum_context_tokens = 512U;
+    std::size_t maximum_context_tokens = 2'048U;
     bool remember_interaction = true;
     GenerationOptions generation;
 };

@@ -1,9 +1,12 @@
 #include "cortex/connectivity.hpp"
 #include "cortex/core.hpp"
+#include "cortex/knowledge.hpp"
 #include "cortex/local_model.hpp"
 #include "cortex/memory.hpp"
 #include "cortex/neural_model.hpp"
+#include "cortex/quality.hpp"
 #include "cortex/reasoner.hpp"
+#include "cortex/self_editor.hpp"
 #include "cortex/tokenizer.hpp"
 #include "cortex/web_server.hpp"
 
@@ -12,7 +15,9 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -64,6 +69,68 @@ void test_connectivity_protocol() {
     cortex::NeuralLanguageModel million_model(million_config);
     expect(million_model.parameter_count() == 1'003'428U,
            "configuração padrão possui 1.003.428 parâmetros treináveis");
+}
+
+void test_quality_knowledge_and_power_modes() {
+    expect(cortex::parse_power_mode("rápido") == cortex::PowerMode::flash
+               && cortex::parse_power_mode("medium") == cortex::PowerMode::medium
+               && cortex::parse_power_mode("alta potência") == cortex::PowerMode::high,
+           "modos Flash, Medium e Alta potência aceitam nomes em português");
+    const cortex::PowerProfile& flash = cortex::power_profile(cortex::PowerMode::flash);
+    const cortex::PowerProfile& high = cortex::power_profile(cortex::PowerMode::high);
+    expect(flash.maximum_tokens < high.maximum_tokens && flash.memory_hits < high.memory_hits
+               && !flash.revision_pass && high.revision_pass,
+           "perfis mudam custo, contexto e segunda passagem de forma verificável");
+
+    const std::string sample = "Primeiro parágrafo explica o objetivo.\n\n"
+                               "Segundo parágrafo contém detalhes e revisão.";
+    const cortex::TextMetrics metrics = cortex::analyze_text(sample);
+    expect(metrics.paragraphs == 2U && metrics.sentences == 2U
+               && metrics.words >= 10U && metrics.lexical_diversity > 0.5
+               && metrics.readability_score > 0.7
+               && metrics.structural_coherence_score > 0.7
+               && !metrics.top_terms.empty(),
+           "analisador mede estrutura, legibilidade, coerência, repetição e tópicos");
+    const cortex::ResponseAssessment accepted = cortex::assess_response(
+        "Explique RAII em C++",
+        "RAII em C++ associa cada recurso ao lifetime de um objeto e ao seu destrutor.");
+    expect(accepted.accepted && accepted.relevance_score > 0.5,
+           "filtro aprova resposta coerente ligada à pergunta");
+    const cortex::ResponseAssessment rejected = cortex::assess_response(
+        "Explique RAII em C++", "Olá! Como posso ajudar com outro assunto?");
+    expect(!rejected.accepted && !rejected.issues.empty(),
+           "filtro rejeita evasão temática antes de exibi-la");
+    expect(cortex::assess_response("Traduza hello", "Olá").accepted,
+           "filtro não rejeita transformação curta apenas por mudar o vocabulário");
+
+    cortex::BehaviorMonitor monitor;
+    monitor.record(accepted, true);
+    monitor.record(rejected, false);
+    const cortex::BehaviorSnapshot behavior = monitor.snapshot();
+    expect(behavior.response_count == 2U && behavior.rejected_count == 1U
+               && behavior.revised_count == 1U && behavior.average_quality > 0.0,
+           "monitor agrega qualidade e revisões sem armazenar o texto do usuário");
+
+    const auto programming = cortex::lookup_curated_knowledge(
+        "Como RAII funciona em C++ moderno?");
+    const auto general = cortex::lookup_curated_knowledge(
+        "Explique inflação e poder de compra");
+    const auto geography = cortex::lookup_curated_knowledge(
+        "Quantos estados existem e qual é a capital do Brasil?");
+    const auto networking = cortex::lookup_curated_knowledge(
+        "Qual é a diferença entre TCP e UDP?");
+    expect(programming && programming->category == "programação"
+               && programming->text.find("std::unique_ptr") != std::string::npos,
+           "base curada responde conhecimento de programação específico");
+    expect(general && general->category == "economia"
+               && general->text.find("poder de compra") != std::string::npos,
+           "base curada também cobre conhecimento geral multidisciplinar");
+    expect(geography && geography->category == "geografia"
+               && geography->text.find("26 estados") != std::string::npos
+               && networking && networking->category == "redes",
+           "geografia e redes são recuperadas por intenção auditável");
+    expect(cortex::curated_knowledge_size() == 70U,
+           "base local possui setenta temas multidisciplinares auditáveis");
 }
 
 void test_open_model_profiles() {
@@ -186,6 +253,102 @@ void test_internet_search_fallback(const std::string& test_executable) {
            "fallback sem chave extrai título e resumo objetivo");
     expect(result.source_url == "https://pt.wikipedia.org/wiki/Ada_Lovelace",
            "pesquisa preserva somente a URL HTTPS da fonte");
+}
+
+void test_controlled_self_refinement(const fs::path& directory,
+                                     const std::string& test_executable) {
+    const fs::path root = directory / "self-project";
+    const fs::path source_directory = root / "src";
+    fs::create_directories(source_directory);
+    const fs::path source_file = source_directory / "sample.cpp";
+    const std::string original = "#include <cstdint>\n\nint answer() {\n    return 42;\n}\n";
+    {
+        std::ofstream output(source_file, std::ios::binary | std::ios::trunc);
+        output << original;
+    }
+
+    set_environment("CORTEX_TEST_FAKE_CURL", "1");
+    set_environment("CORTEX_TEST_SELF_EDIT", "1");
+    cortex::LanguageApiConfig config;
+    config.endpoint = "http://127.0.0.1:9999/v1/chat/completions";
+    config.model = "cortex-self-test";
+    config.api_key_environment.clear();
+    cortex::LanguageApiClient language(
+        config, cortex::NativeHttpClient(test_executable));
+    cortex::SafeSelfEditor editor(root, language, true);
+
+    bool controlled_creation_blocked = false;
+    try {
+        static_cast<void>(editor.propose_file(
+            "src/new.cpp", "Crie um arquivo.", true));
+    } catch (const cortex::Error&) {
+        controlled_creation_blocked = true;
+    }
+    expect(controlled_creation_blocked,
+           "modo padrão continua bloqueando criação fora do contrato controlado");
+
+    const cortex::SourceAudit audit = editor.audit(
+        "src/sample.cpp", "A função respondeu 42 quando o requisito passou a ser 43.");
+    expect(audit.lines >= 5U && audit.maintainability_score > 80.0
+               && !audit.suggested_instruction.empty(),
+           "autoevolução começa por auditoria estática e comportamento observado");
+    const cortex::CodeProposal proposal = editor.propose_refinement(
+        "src/sample.cpp", "Atualize a resposta para 43.", "O teste agora espera 43.");
+    expect(proposal.replacement.find("return 43") != std::string::npos
+               && !proposal.audit_summary.empty(),
+           "GGUF simulado produz proposta completa validada antes de aplicar");
+
+    const cortex::AppliedCodeChange applied = editor.apply(
+        proposal.id, "APLICAR " + std::to_string(proposal.id));
+    std::ifstream changed_stream(source_file, std::ios::binary);
+    const std::string changed((std::istreambuf_iterator<char>(changed_stream)),
+                              std::istreambuf_iterator<char>());
+    expect(changed.find("return 43") != std::string::npos
+               && fs::is_regular_file(applied.backup_file),
+           "aplicação confirmada cria backup e publica o fonte refinado");
+
+    // Uma nova instância simula recompilação/reinício: o rollback deve sobreviver
+    // ao desaparecimento do mapa de aplicações em memória.
+    cortex::SafeSelfEditor restarted_editor(root, language, true);
+    const cortex::RolledBackCodeChange rolled_back = restarted_editor.rollback(
+        proposal.id, "REVERTER " + std::to_string(proposal.id));
+    std::ifstream restored_stream(source_file, std::ios::binary);
+    const std::string restored((std::istreambuf_iterator<char>(restored_stream)),
+                               std::istreambuf_iterator<char>());
+    expect(restored == original && rolled_back.restored_file == source_file,
+           "rollback persistente restaura conteúdo exato mesmo após reinício");
+
+    const fs::path external_file = directory / "system-area" / "created.cpp";
+    cortex::SafeSelfEditor unrestricted(root, language, true, true);
+    const cortex::ValidationProposal validation = unrestricted.stage_validation("echo validation-ok");
+    bool validation_without_permission_blocked = false;
+    try {
+        static_cast<void>(unrestricted.run_validation(validation.id, "EXECUTAR 0"));
+    } catch (const cortex::Error&) {
+        validation_without_permission_blocked = true;
+    }
+    const cortex::ValidationResult validation_result = unrestricted.run_validation(
+        validation.id, "EXECUTAR " + std::to_string(validation.id));
+    expect(validation_without_permission_blocked && validation_result.exit_code == 0
+               && validation_result.output.find("validation-ok") != std::string::npos,
+           "validação livre mostra o comando e só executa após permissão de uso único");
+
+    const cortex::CodeProposal creation = unrestricted.propose_file(
+        external_file.string(), "Crie este arquivo C++ fora da raiz do projeto.", true);
+    expect(creation.creates_file && creation.unrestricted_scope,
+           "modo irrestrito pode propor arquivo novo em caminho absoluto");
+    const cortex::AppliedCodeChange created = unrestricted.apply(
+        creation.id, "APLICAR " + std::to_string(creation.id));
+    expect(created.created_file && fs::is_regular_file(external_file),
+           "arquivo externo só é criado depois da autorização exata");
+    cortex::SafeSelfEditor restarted_unrestricted(root, language, true, true);
+    const cortex::RolledBackCodeChange removed = restarted_unrestricted.rollback(
+        creation.id, "REVERTER " + std::to_string(creation.id));
+    expect(removed.restored_file == external_file && !fs::exists(external_file),
+           "rollback persistente remove arquivo criado pelo modo irrestrito");
+
+    clear_environment("CORTEX_TEST_SELF_EDIT");
+    clear_environment("CORTEX_TEST_FAKE_CURL");
 }
 
 void test_matrix() {
@@ -317,6 +480,24 @@ void test_native_reasoner() {
     expect(!cortex::parse_web_research_request("explique a internet").explicit_request,
            "menção comum à internet não ativa pesquisa explícita");
 
+    const auto text_analysis = cortex::reason_locally(
+        "analise este texto: Uma frase clara. Outra frase verificável.", {}, model);
+    expect(text_analysis && text_analysis->mode == cortex::LocalResponseMode::text_analysis
+               && text_analysis->text.find("Análise textual determinística") != std::string::npos,
+           "reasoner analisa texto localmente antes de qualquer geração");
+    const auto self_analysis = cortex::reason_locally(
+        "analise sua resposta",
+        "Usuário: Explique RAII em C++\nAssistente: RAII em C++ associa recursos a objetos.",
+        model);
+    expect(self_analysis && self_analysis->mode == cortex::LocalResponseMode::self_analysis
+               && self_analysis->text.find("Autoanálise da resposta anterior") != std::string::npos,
+           "reasoner avalia o próprio comportamento recente com limites explícitos");
+    const auto curated = cortex::reason_locally(
+        "Como funcionam índices de banco de dados SQL?", {}, model);
+    expect(curated && curated->mode == cortex::LocalResponseMode::curated_knowledge
+               && curated->text.find("B-tree") != std::string::npos,
+           "reasoner consulta base geral curada com foco em programação");
+
     const auto benchmark = cortex::reason_locally("benchmark", {}, model);
     expect(benchmark && benchmark->mode == cortex::LocalResponseMode::benchmark
                && benchmark->text.find("Benchmark local concluído") != std::string::npos
@@ -362,7 +543,7 @@ void test_native_reasoner() {
     const auto architecture = cortex::reason_locally(
         "Como BPE, GRU e memória trabalham juntos?", {}, model);
     expect(architecture && architecture->mode == cortex::LocalResponseMode::knowledge
-               && architecture->text.find("quatro caminhos") != std::string::npos,
+               && architecture->text.find("seis caminhos") != std::string::npos,
            "base técnica responde por intenção, não por próxima palavra aleatória");
 
     const auto follow_up = cortex::reason_locally(
@@ -394,8 +575,12 @@ void test_native_reasoner() {
                && learned_web->text.find("Wikipedia (pt)") != std::string::npos,
            "reasoner reutiliza pesquisa persistida como conhecimento offline fundamentado");
     expect(cortex::local_response_mode_name(cortex::LocalResponseMode::web_knowledge)
-               == "local-web-knowledge",
-           "resposta offline identifica o mecanismo que forneceu o conhecimento");
+               == "local-web-knowledge"
+               && cortex::local_response_mode_name(cortex::LocalResponseMode::text_analysis)
+                      == "local-text-analysis"
+               && cortex::local_response_mode_name(cortex::LocalResponseMode::curated_knowledge)
+                      == "local-curated-knowledge",
+           "respostas identificam memória web, análise e base curada na interface");
 
     expect(!cortex::neural_response_is_relevant(
                "benchmark", "Olá! Estou pronta para responder. Como posso ajudar?"),
@@ -429,17 +614,26 @@ void test_embedded_web_interface() {
            "interface permite ativar o modelo GGUF local sem expor uma chave");
     expect(html.find("local-open-model") != std::string_view::npos,
            "interface identifica execução GGUF realmente local");
-    expect(html.find("Executar benchmark") != std::string_view::npos
-               && html.find("Testar cálculo local") != std::string_view::npos,
-           "interface oferece ações locais que produzem resultados verificáveis");
+    expect(html.find("Aprender programação") != std::string_view::npos
+               && html.find("Analisar um texto") != std::string_view::npos,
+           "interface oferece conhecimento curado e análise textual");
+    expect(html.find("powerMode") != std::string_view::npos
+               && html.find("Alta potência · revisão dupla") != std::string_view::npos,
+           "interface expõe modos Flash, Medium e Alta potência");
     expect(html.find("pesquise na internet por computação quântica") != std::string_view::npos
                && html.find("salvo para uso offline") != std::string_view::npos,
            "interface ensina a pesquisa sem chave e sinaliza aprendizado persistente");
     expect(html.find("id=\"remember\" type=\"checkbox\" checked")
                == std::string_view::npos,
            "memória automática inicia desligada para evitar episódios irrelevantes");
-    expect(html.find("/api/code/propose") != std::string_view::npos,
-           "interface possui fluxo de autoedição controlada");
+    expect(html.find("/api/code/audit") != std::string_view::npos
+               && html.find("/api/code/refine") != std::string_view::npos
+               && html.find("/api/code/rollback") != std::string_view::npos,
+           "interface possui auditoria, autorrefinamento e rollback controlados");
+    expect(html.find("/api/validation/stage") != std::string_view::npos
+               && html.find("/api/validation/run") != std::string_view::npos
+               && html.find("Criar se não existir") != std::string_view::npos,
+           "interface irrestrita prepara criação e validações com permissão explícita");
 }
 
 void test_long_term_memory(const fs::path& directory) {
@@ -506,6 +700,14 @@ int main(int argc, char** argv) {
         std::ostringstream input;
         input << std::cin.rdbuf();
         const std::string request = input.str();
+        if (std::getenv("CORTEX_TEST_SELF_EDIT") != nullptr) {
+            const std::string replacement =
+                "```cpp\n#include <cstdint>\n\nint answer() {\n    return 43;\n}\n```";
+            std::cout << "{\"choices\":[{\"message\":{\"content\":"
+                      << cortex::json_quote(replacement)
+                      << "}}]}\n__CORTEX_HTTP_STATUS__:200";
+            return 0;
+        }
         bool bearer_in_arguments = false;
         for (int index = 1; index < argc; ++index) {
             if (std::string_view(argv[index]).find("Authorization: Bearer chave-teste")
@@ -537,9 +739,12 @@ int main(int argc, char** argv) {
     const fs::path directory = temporary_test_directory();
     try {
         test_connectivity_protocol();
+        test_quality_knowledge_and_power_modes();
         test_open_model_profiles();
         test_language_api_payload(argc > 0 ? argv[0] : "./build/cortex-tests");
         test_internet_search_fallback(argc > 0 ? argv[0] : "./build/cortex-tests");
+        test_controlled_self_refinement(
+            directory, argc > 0 ? argv[0] : "./build/cortex-tests");
         test_matrix();
         test_tokenizer(directory);
         test_neural_training_and_checkpoint(directory);

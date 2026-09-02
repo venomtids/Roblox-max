@@ -1,6 +1,8 @@
 #include "cortex/web_server.hpp"
 
 #include "cortex/core.hpp"
+#include "cortex/knowledge.hpp"
+#include "cortex/quality.hpp"
 #include "cortex/self_editor.hpp"
 
 #include <algorithm>
@@ -134,6 +136,8 @@ struct HttpRequest final {
     std::string method;
     std::string target;
     std::string content_type;
+    std::string host;
+    std::string origin;
     std::string body;
 };
 
@@ -302,9 +306,11 @@ void configure_client_socket(NativeSocket socket) {
         throw HttpFailure(400, "Transfer-Encoding não é aceito; use Content-Length");
     }
     const auto type = headers.find("content-type");
-    if (type != headers.end()) {
-        request.content_type = ascii_lower(type->second);
-    }
+    if (type != headers.end()) request.content_type = ascii_lower(type->second);
+    const auto host = headers.find("host");
+    if (host != headers.end()) request.host = ascii_lower(host->second);
+    const auto origin = headers.find("origin");
+    if (origin != headers.end()) request.origin = ascii_lower(origin->second);
 
     std::size_t content_length = 0U;
     const auto length = headers.find("content-length");
@@ -343,6 +349,7 @@ void configure_client_socket(NativeSocket socket) {
     case 200: return "OK";
     case 204: return "No Content";
     case 400: return "Bad Request";
+    case 403: return "Forbidden";
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
     case 411: return "Length Required";
@@ -806,6 +813,9 @@ using JsonObject = std::unordered_map<std::string, JsonParser::Value>;
     case LocalResponseMode::calculation: return "Calculadora C++20";
     case LocalResponseMode::memory: return "Memória persistente";
     case LocalResponseMode::web_knowledge: return "Conhecimento web salvo";
+    case LocalResponseMode::curated_knowledge: return "Base curada multidisciplinar";
+    case LocalResponseMode::text_analysis: return "Analisador textual C++20";
+    case LocalResponseMode::self_analysis: return "Monitor de comportamento";
     case LocalResponseMode::knowledge: return "Cortex Native Reasoner";
     case LocalResponseMode::safe_fallback: return "Filtro de relevância";
     case LocalResponseMode::neural: return "GRU local";
@@ -815,7 +825,8 @@ using JsonObject = std::unordered_map<std::string, JsonParser::Value>;
 
 [[nodiscard]] bool is_native_tool(LocalResponseMode mode) noexcept {
     return mode == LocalResponseMode::benchmark || mode == LocalResponseMode::calculation
-           || mode == LocalResponseMode::memory;
+           || mode == LocalResponseMode::memory || mode == LocalResponseMode::text_analysis
+           || mode == LocalResponseMode::self_analysis;
 }
 
 class WebRuntime final {
@@ -830,13 +841,18 @@ public:
           options_(std::move(options)),
           language_api_(options_.language_api),
           internet_(),
-          self_editor_(options_.source_root, language_api_, options_.self_edit_enabled) {}
+          self_editor_(options_.source_root, language_api_, options_.self_edit_enabled,
+                       options_.unrestricted_self_edit) {}
 
     [[nodiscard]] bool language_api_configured() const noexcept {
         return language_api_.configured();
     }
 
     [[nodiscard]] HttpResponse route(const HttpRequest& request) {
+        if (request.target.starts_with("/api/code/")
+            || request.target.starts_with("/api/validation/")) {
+            require_local_permission_origin(request);
+        }
         if (request.method == "GET" && request.target == "/") {
             HttpResponse response;
             response.content_type = "text/html; charset=utf-8";
@@ -864,6 +880,18 @@ public:
             require_json_content_type(request);
             return remember_response(request.body);
         }
+        if (request.method == "POST" && request.target == "/api/analyze") {
+            require_json_content_type(request);
+            return analyze_response(request.body);
+        }
+        if (request.method == "POST" && request.target == "/api/code/audit") {
+            require_json_content_type(request);
+            return code_audit_response(request.body);
+        }
+        if (request.method == "POST" && request.target == "/api/code/refine") {
+            require_json_content_type(request);
+            return code_refinement_response(request.body);
+        }
         if (request.method == "POST" && request.target == "/api/code/propose") {
             require_json_content_type(request);
             return code_proposal_response(request.body);
@@ -872,9 +900,25 @@ public:
             require_json_content_type(request);
             return code_apply_response(request.body);
         }
+        if (request.method == "POST" && request.target == "/api/code/rollback") {
+            require_json_content_type(request);
+            return code_rollback_response(request.body);
+        }
+        if (request.method == "POST" && request.target == "/api/validation/stage") {
+            require_json_content_type(request);
+            return validation_stage_response(request.body);
+        }
+        if (request.method == "POST" && request.target == "/api/validation/run") {
+            require_json_content_type(request);
+            return validation_run_response(request.body);
+        }
         if (request.target == "/api/chat" || request.target == "/api/remember"
-            || request.target == "/api/status" || request.target == "/api/code/propose"
-            || request.target == "/api/code/apply") {
+            || request.target == "/api/analyze" || request.target == "/api/status"
+            || request.target == "/api/code/audit" || request.target == "/api/code/refine"
+            || request.target == "/api/code/propose" || request.target == "/api/code/apply"
+            || request.target == "/api/code/rollback"
+            || request.target == "/api/validation/stage"
+            || request.target == "/api/validation/run") {
             return json_error_response(405, "método HTTP não permitido para este endpoint");
         }
         return json_error_response(404, "endpoint não encontrado");
@@ -887,8 +931,26 @@ private:
         }
     }
 
+    void require_local_permission_origin(const HttpRequest& request) const {
+        if (!options_.unrestricted_self_edit) return;
+        const std::string port = std::to_string(options_.port);
+        const bool local_host = request.host == "127.0.0.1"
+                                || request.host == "127.0.0.1:" + port
+                                || request.host == "localhost"
+                                || request.host == "localhost:" + port
+                                || request.host == "[::1]"
+                                || request.host == "[::1]:" + port;
+        if (!local_host) {
+            throw HttpFailure(403, "operação de sistema exige Host de loopback explícito");
+        }
+        if (!request.origin.empty() && request.origin != "http://" + request.host) {
+            throw HttpFailure(403, "origem externa não pode autorizar alterações de sistema");
+        }
+    }
+
     [[nodiscard]] HttpResponse status_response() const {
         const bool api_configured = language_api_.configured();
+        const BehaviorSnapshot behavior = behavior_.snapshot();
         const bool api_requested = !language_api_.config().endpoint.empty()
                                    && !language_api_.config().model.empty();
         const std::string_view language_provider = api_requested
@@ -912,11 +974,26 @@ private:
              << json_escape(api_requested ? display_model
                                           : std::string_view("Cortex Native Reasoner + GRU"))
              << ",\"native_reasoner\":true"
+             << ",\"quality_filter\":true"
+             << ",\"knowledge_topics\":" << curated_knowledge_size()
+             << ",\"power_mode\":" << json_escape(power_mode_name(options_.agent.power_mode))
              << ",\"language_parameters\":" << language_api_.config().parameter_count
              << ",\"language_context\":" << language_api_.config().context_tokens
              << ",\"internet\":" << (options_.internet_enabled ? "true" : "false")
-             << ",\"self_edit\":"
+             << ",\"self_edit\":" << (self_editor_.enabled() ? "true" : "false")
+             << ",\"unrestricted_self_edit\":"
+             << (self_editor_.unrestricted_scope() ? "true" : "false")
+             << ",\"self_edit_scope\":"
+             << json_escape(self_editor_.unrestricted_scope()
+                                ? std::string_view("system-supervised")
+                                : std::string_view("project-controlled"))
+             << ",\"self_programming\":"
              << (self_editor_.enabled() && language_api_.configured() ? "true" : "false")
+             << ",\"behavior_responses\":" << behavior.response_count
+             << ",\"behavior_rejected\":" << behavior.rejected_count
+             << ",\"behavior_revised\":" << behavior.revised_count
+             << ",\"behavior_quality\":" << std::fixed << std::setprecision(6)
+             << behavior.average_quality
              << '}';
         return HttpResponse{200, "application/json; charset=utf-8", body.str(), {}};
     }
@@ -937,25 +1014,44 @@ private:
         }
 
         AgentOptions agent_options = options_.agent;
+        const std::string requested_power = optional_json_string(object, "power_mode");
+        try {
+            agent_options.power_mode = requested_power.empty()
+                ? options_.agent.power_mode : parse_power_mode(requested_power);
+        } catch (const Error& error) {
+            throw HttpFailure(422, error.what());
+        }
+        const PowerProfile& power = power_profile(agent_options.power_mode);
+        agent_options.memory_hits = power.memory_hits;
+        agent_options.maximum_context_tokens = power.context_tokens;
+        agent_options.minimum_memory_score = agent_options.power_mode == PowerMode::flash ? 0.70F
+                                             : agent_options.power_mode == PowerMode::high ? 0.55F
+                                                                                           : 0.65F;
+        agent_options.generation.temperature = power.temperature;
+        agent_options.generation.top_k = std::min(
+            power.top_k, model_.config().vocabulary_size);
+        agent_options.generation.maximum_tokens = power.maximum_tokens;
+        agent_options.generation.repetition_penalty = power.repetition_penalty;
+
         const double temperature = optional_json_number(
-            object, "temperature", static_cast<double>(agent_options.generation.temperature));
+            object, "temperature", static_cast<double>(power.temperature));
         if (temperature < 0.1 || temperature > 2.0) {
             throw HttpFailure(422, "temperature deve estar entre 0.1 e 2.0");
         }
         agent_options.generation.temperature = static_cast<float>(temperature);
         agent_options.generation.top_k = bounded_integer(
-            optional_json_number(object, "top_k",
-                                 static_cast<double>(agent_options.generation.top_k)),
+            optional_json_number(object, "top_k", static_cast<double>(power.top_k)),
             1U, model_.config().vocabulary_size, "top_k");
-        // APIs de fronteira precisam de uma janela maior; o fallback GRU é limitado
-        // separadamente abaixo para continuar responsivo em uma máquina local.
-        agent_options.generation.maximum_tokens = bounded_integer(
+        // O perfil impõe um teto real mesmo quando um cliente pede um valor maior.
+        const std::size_t requested_tokens = bounded_integer(
             optional_json_number(object, "max_tokens",
-                                 static_cast<double>(agent_options.generation.maximum_tokens)),
+                                 static_cast<double>(power.maximum_tokens)),
             1U, 4'096U, "max_tokens");
+        agent_options.generation.maximum_tokens = std::min(
+            requested_tokens, power.maximum_tokens);
         agent_options.memory_hits = bounded_integer(
             optional_json_number(object, "memory_hits",
-                                 static_cast<double>(agent_options.memory_hits)),
+                                 static_cast<double>(power.memory_hits)),
             0U, 16U, "memory_hits");
         agent_options.remember_interaction = optional_json_bool(
             object, "remember", agent_options.remember_interaction);
@@ -982,6 +1078,8 @@ private:
         std::uint64_t stored_memory_id = 0U;
         bool learned_from_web = false;
         bool internet_failed = false;
+        bool response_revised = false;
+        bool model_response_rejected = false;
 
         if (research_request.explicit_request && research_request.query.empty()) {
             answer = "Diga o que devo pesquisar. Exemplo: `pesquise na internet por computação "
@@ -1070,10 +1168,12 @@ private:
                     "com clareza e diretamente à pergunta atual. Raciocine antes de responder, mas "
                     "mostre somente a explicação necessária. Não invente fatos. Use conversa, "
                     "memórias e informação da internet somente quando forem relevantes; cite a "
-                    "fonte fornecida para fatos recentes. Se não souber, admita isso brevemente.";
+                    "fonte fornecida para fatos recentes. Se não souber, admita isso brevemente.\n";
+                system += power.response_directive;
                 if (language_api_.config().provider == "local-open-model") {
-                    // Qwen3 economiza a janela no diálogo diário; /think do usuário ainda prevalece.
-                    system += "\n/no_think";
+                    // Flash/medium evitam raciocínio oculto longo; alta potência permite revisão profunda.
+                    system += agent_options.power_mode == PowerMode::high
+                        ? "\n/think" : "\n/no_think";
                 }
 
                 std::string api_prompt = enriched.str();
@@ -1117,17 +1217,59 @@ private:
                 LanguageCompletion completion = language_api_.complete(
                     system, api_prompt, agent_options.generation.temperature,
                     api_maximum_tokens, agent_options.generation.top_k);
-                answer = sanitize_utf8(completion.text);
-                const auto response_whitespace = [](char character) {
-                    return character == ' ' || character == '\t' || character == '\r'
-                           || character == '\n';
-                };
-                while (!answer.empty() && response_whitespace(answer.front())) answer.erase(0U, 1U);
-                while (!answer.empty() && response_whitespace(answer.back())) answer.pop_back();
-                if (answer.empty()) throw Error("API de linguagem devolveu texto vazio");
-                provider = language_api_.config().provider == "local-open-model"
-                           ? "local-open-model" : "language-api";
-                provider_model = completion.model;
+                std::string draft = sanitize_utf8(completion.text);
+                draft = std::string(trim_ascii(draft));
+                if (draft.empty()) throw Error("API de linguagem devolveu texto vazio");
+                ResponseAssessment selected_assessment = assess_response(message, draft);
+
+                if (power.revision_pass) {
+                    std::ostringstream review_prompt;
+                    review_prompt << "PERGUNTA ORIGINAL:\n" << message
+                                  << "\n\nRASCUNHO:\n"
+                                  << std::string_view(draft).substr(0U, 24U * 1024U)
+                                  << "\n\nAVALIAÇÃO NATIVA: qualidade="
+                                  << std::fixed << std::setprecision(3)
+                                  << selected_assessment.quality_score
+                                  << ", relevância=" << selected_assessment.relevance_score
+                                  << ", coerência=" << selected_assessment.coherence_score
+                                  << ". Reescreva a resposta final corrigindo problemas, mantendo "
+                                     "fatos sustentados e sem mencionar esta revisão.";
+                    try {
+                        LanguageCompletion revision = language_api_.complete(
+                            "Você é o revisor final da Cortex. Entregue somente a resposta revisada, "
+                            "coerente, completa e diretamente ligada à pergunta. Não invente fontes.",
+                            review_prompt.str(), 0.25F, api_maximum_tokens,
+                            agent_options.generation.top_k);
+                        std::string candidate = sanitize_utf8(revision.text);
+                        candidate = std::string(trim_ascii(candidate));
+                        const ResponseAssessment revised_assessment = assess_response(
+                            message, candidate);
+                        if (revised_assessment.accepted
+                            && (!selected_assessment.accepted
+                                || revised_assessment.quality_score
+                                       >= selected_assessment.quality_score)) {
+                            draft = std::move(candidate);
+                            selected_assessment = revised_assessment;
+                            completion.model = std::move(revision.model);
+                            response_revised = true;
+                        }
+                    } catch (const std::exception& revision_error) {
+                        if (!warning.empty()) warning += "; ";
+                        warning += "revisão de alta potência indisponível: ";
+                        warning += revision_error.what();
+                    }
+                }
+
+                if (!selected_assessment.accepted) {
+                    model_response_rejected = true;
+                    if (!warning.empty()) warning += "; ";
+                    warning += "filtro nativo rejeitou resposta desconectada ou degradada";
+                } else {
+                    answer = std::move(draft);
+                    provider = language_api_.config().provider == "local-open-model"
+                               ? "local-open-model" : "language-api";
+                    provider_model = completion.model;
+                }
             } catch (const std::exception& exception) {
                 if (!warning.empty()) warning += "; ";
                 warning += language_api_.config().provider == "local-open-model"
@@ -1197,6 +1339,8 @@ private:
                 }
             }
         }
+        const ResponseAssessment delivered_assessment = assess_response(message, answer);
+        behavior_.record(delivered_assessment, response_revised);
         if (agent_options.remember_interaction && stored_memory_id == 0U) {
             stored_memory_id = agent.remember(
                 "Usuário: " + message + "\nAssistente: " + answer);
@@ -1215,11 +1359,26 @@ private:
              << ",\"generated_tokens\":" << generated_tokens
              << ",\"memory_id\":" << stored_memory_id
              << ",\"latency_ms\":" << elapsed_ms
+             << ",\"power_mode\":" << json_escape(power.name)
+             << ",\"quality_score\":" << std::fixed << std::setprecision(6)
+             << delivered_assessment.quality_score
+             << ",\"relevance_score\":" << delivered_assessment.relevance_score
+             << ",\"coherence_score\":" << delivered_assessment.coherence_score
+             << ",\"filter_accepted\":"
+             << (delivered_assessment.accepted ? "true" : "false")
+             << ",\"model_response_rejected\":"
+             << (model_response_rejected ? "true" : "false")
+             << ",\"response_revised\":" << (response_revised ? "true" : "false")
              << ",\"internet_source\":" << json_escape(internet_result.source_url)
              << ",\"internet_source_name\":" << json_escape(internet_result.source_name)
              << ",\"learned_from_web\":" << (learned_from_web ? "true" : "false")
              << ",\"warning\":" << json_escape(warning)
-             << ",\"recalled\":[";
+             << ",\"quality_issues\":[";
+        for (std::size_t index = 0U; index < delivered_assessment.issues.size(); ++index) {
+            if (index != 0U) body << ',';
+            body << json_escape(delivered_assessment.issues[index]);
+        }
+        body << "],\"recalled\":[";
         for (std::size_t index = 0U; index < recalled.size(); ++index) {
             if (index != 0U) body << ',';
             const MemoryHit& hit = recalled[index];
@@ -1231,6 +1390,103 @@ private:
         return HttpResponse{200, "application/json; charset=utf-8", body.str(), {}};
     }
 
+    [[nodiscard]] HttpResponse analyze_response(std::string_view encoded) {
+        const JsonObject object = JsonParser(encoded).parse_object();
+        std::string text = sanitize_utf8(required_json_string(object, "text"));
+        std::string prompt = sanitize_utf8(optional_json_string(object, "prompt"));
+        if (text.empty() || text.size() > maximum_message_bytes
+            || prompt.size() > maximum_message_bytes) {
+            throw HttpFailure(422, "text/prompt fora do limite de 16 KiB");
+        }
+        const TextMetrics metrics = analyze_text(text);
+        const ResponseAssessment assessment = prompt.empty()
+            ? ResponseAssessment{
+                  metrics.words != 0U,
+                  0.6 * metrics.readability_score + 0.4 * metrics.structural_coherence_score,
+                  1.0,
+                  metrics.structural_coherence_score,
+                  metrics,
+                  {}}
+            : assess_response(prompt, text);
+        const std::string summary = prompt.empty()
+            ? format_text_analysis(text) : format_response_analysis(prompt, text);
+        std::ostringstream body;
+        body << "{\"ok\":true,\"summary\":" << json_escape(summary)
+             << ",\"bytes\":" << metrics.bytes
+             << ",\"characters\":" << metrics.characters
+             << ",\"words\":" << metrics.words
+             << ",\"sentences\":" << metrics.sentences
+             << ",\"paragraphs\":" << metrics.paragraphs
+             << ",\"quality_score\":" << std::fixed << std::setprecision(6)
+             << assessment.quality_score
+             << ",\"relevance_score\":" << assessment.relevance_score
+             << ",\"coherence_score\":" << assessment.coherence_score
+             << ",\"readability_score\":" << metrics.readability_score
+             << ",\"structural_coherence_score\":" << metrics.structural_coherence_score
+             << ",\"repeated_word_ratio\":" << metrics.repeated_word_ratio
+             << ",\"long_sentence_ratio\":" << metrics.long_sentence_ratio
+             << ",\"topics\":[";
+        for (std::size_t index = 0U; index < metrics.top_terms.size(); ++index) {
+            if (index != 0U) body << ',';
+            body << json_escape(metrics.top_terms[index]);
+        }
+        body << "],\"accepted\":" << (assessment.accepted ? "true" : "false") << '}';
+        return HttpResponse{200, "application/json; charset=utf-8", body.str(), {}};
+    }
+
+    [[nodiscard]] HttpResponse code_audit_response(std::string_view encoded) {
+        if (!self_editor_.enabled()) {
+            throw HttpFailure(422, "autoevolução desativada; reinicie com --enable-self-edit");
+        }
+        const JsonObject object = JsonParser(encoded).parse_object();
+        const std::string file = required_json_string(object, "file");
+        const std::string behavior = sanitize_utf8(optional_json_string(object, "behavior"));
+        if (behavior.size() > 2'048U) {
+            throw HttpFailure(422, "behavior excede 2 KiB");
+        }
+        const SourceAudit audit = self_editor_.audit(file, behavior);
+        std::ostringstream body;
+        body << "{\"ok\":true,\"file\":" << json_escape(audit.relative_path)
+             << ",\"bytes\":" << audit.bytes
+             << ",\"lines\":" << audit.lines
+             << ",\"long_lines\":" << audit.long_lines
+             << ",\"todo_markers\":" << audit.todo_markers
+             << ",\"risky_calls\":" << audit.risky_calls
+             << ",\"maintainability_score\":" << std::fixed << std::setprecision(3)
+             << audit.maintainability_score
+             << ",\"suggested_instruction\":" << json_escape(audit.suggested_instruction)
+             << ",\"findings\":[";
+        for (std::size_t index = 0U; index < audit.findings.size(); ++index) {
+            if (index != 0U) body << ',';
+            body << json_escape(audit.findings[index]);
+        }
+        body << "]}";
+        return HttpResponse{200, "application/json; charset=utf-8", body.str(), {}};
+    }
+
+    [[nodiscard]] HttpResponse code_refinement_response(std::string_view encoded) {
+        if (!self_editor_.enabled()) {
+            throw HttpFailure(422, "autoevolução desativada; reinicie com --enable-self-edit");
+        }
+        const JsonObject object = JsonParser(encoded).parse_object();
+        const std::string file = required_json_string(object, "file");
+        const std::string objective = required_json_string(object, "objective");
+        const std::string behavior = sanitize_utf8(optional_json_string(object, "behavior"));
+        if (objective.size() > 1'024U || behavior.size() > 1'024U) {
+            throw HttpFailure(422, "objective/behavior excede 1 KiB");
+        }
+        CodeProposal proposal = self_editor_.propose_refinement(file, objective, behavior);
+        std::ostringstream body;
+        body << "{\"ok\":true,\"proposal_id\":" << proposal.id
+             << ",\"file\":" << json_escape(proposal.relative_path)
+             << ",\"replacement\":" << json_escape(proposal.replacement)
+             << ",\"audit_summary\":" << json_escape(proposal.audit_summary)
+             << ",\"risk_level\":" << json_escape(proposal.risk_level)
+             << ",\"confirmation\":" << json_escape("APLICAR " + std::to_string(proposal.id))
+             << '}';
+        return HttpResponse{200, "application/json; charset=utf-8", body.str(), {}};
+    }
+
     [[nodiscard]] HttpResponse code_proposal_response(std::string_view encoded) {
         if (!self_editor_.enabled()) {
             throw HttpFailure(422, "autoedição desativada; reinicie com --enable-self-edit");
@@ -1238,11 +1494,17 @@ private:
         const JsonObject object = JsonParser(encoded).parse_object();
         const std::string file = required_json_string(object, "file");
         const std::string instruction = required_json_string(object, "instruction");
-        CodeProposal proposal = self_editor_.propose(file, instruction);
+        const bool create = optional_json_bool(object, "create", false);
+        CodeProposal proposal = self_editor_.propose_file(file, instruction, create);
         std::ostringstream body;
         body << "{\"ok\":true,\"proposal_id\":" << proposal.id
              << ",\"file\":" << json_escape(proposal.relative_path)
              << ",\"replacement\":" << json_escape(proposal.replacement)
+             << ",\"audit_summary\":" << json_escape(proposal.audit_summary)
+             << ",\"risk_level\":" << json_escape(proposal.risk_level)
+             << ",\"creates_file\":" << (proposal.creates_file ? "true" : "false")
+             << ",\"unrestricted_scope\":"
+             << (proposal.unrestricted_scope ? "true" : "false")
              << ",\"confirmation\":" << json_escape("APLICAR " + std::to_string(proposal.id))
              << '}';
         return HttpResponse{200, "application/json; charset=utf-8", body.str(), {}};
@@ -1263,7 +1525,64 @@ private:
         body << "{\"ok\":true,\"proposal_id\":" << applied.proposal_id
              << ",\"changed_file\":" << json_escape(applied.changed_file.string())
              << ",\"backup_file\":" << json_escape(applied.backup_file.string())
+             << ",\"created_file\":" << (applied.created_file ? "true" : "false")
+             << ",\"rollback_confirmation\":"
+             << json_escape("REVERTER " + std::to_string(applied.proposal_id))
              << ",\"restart_required\":true}";
+        return HttpResponse{200, "application/json; charset=utf-8", body.str(), {}};
+    }
+
+    [[nodiscard]] HttpResponse code_rollback_response(std::string_view encoded) {
+        if (!self_editor_.enabled()) {
+            throw HttpFailure(422, "autoevolução desativada; reinicie com --enable-self-edit");
+        }
+        const JsonObject object = JsonParser(encoded).parse_object();
+        const std::size_t proposal_id = bounded_integer(
+            optional_json_number(object, "proposal_id", 0.0), 1U,
+            static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()), "proposal_id");
+        const std::string confirmation = required_json_string(object, "confirmation");
+        const RolledBackCodeChange rollback = self_editor_.rollback(
+            static_cast<std::uint64_t>(proposal_id), confirmation);
+        std::ostringstream body;
+        body << "{\"ok\":true,\"proposal_id\":" << rollback.proposal_id
+             << ",\"restored_file\":" << json_escape(rollback.restored_file.string())
+             << ",\"backup_file\":" << json_escape(rollback.backup_file.string())
+             << ",\"restart_required\":true}";
+        return HttpResponse{200, "application/json; charset=utf-8", body.str(), {}};
+    }
+
+    [[nodiscard]] HttpResponse validation_stage_response(std::string_view encoded) {
+        if (!self_editor_.unrestricted_scope()) {
+            throw HttpFailure(422, "validação livre requer --unrestricted-self-edit em loopback");
+        }
+        const JsonObject object = JsonParser(encoded).parse_object();
+        const std::string command = required_json_string(object, "command");
+        const ValidationProposal proposal = self_editor_.stage_validation(command);
+        std::ostringstream body;
+        body << "{\"ok\":true,\"validation_id\":" << proposal.id
+             << ",\"command\":" << json_escape(proposal.command)
+             << ",\"confirmation\":"
+             << json_escape("EXECUTAR " + std::to_string(proposal.id)) << '}';
+        return HttpResponse{200, "application/json; charset=utf-8", body.str(), {}};
+    }
+
+    [[nodiscard]] HttpResponse validation_run_response(std::string_view encoded) {
+        if (!self_editor_.unrestricted_scope()) {
+            throw HttpFailure(422, "validação livre requer --unrestricted-self-edit em loopback");
+        }
+        const JsonObject object = JsonParser(encoded).parse_object();
+        const std::size_t validation_id = bounded_integer(
+            optional_json_number(object, "validation_id", 0.0), 1U,
+            static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()), "validation_id");
+        const std::string confirmation = required_json_string(object, "confirmation");
+        ValidationResult result = self_editor_.run_validation(
+            static_cast<std::uint64_t>(validation_id), confirmation);
+        result.output = sanitize_utf8(result.output);
+        std::ostringstream body;
+        body << "{\"ok\":true,\"validation_id\":" << result.id
+             << ",\"exit_code\":" << result.exit_code
+             << ",\"output\":" << json_escape(result.output)
+             << ",\"full_log\":" << json_escape(result.full_log.string()) << '}';
         return HttpResponse{200, "application/json; charset=utf-8", body.str(), {}};
     }
 
@@ -1292,6 +1611,7 @@ private:
     LanguageApiClient language_api_;
     InternetSearch internet_;
     SafeSelfEditor self_editor_;
+    BehaviorMonitor behavior_;
     std::atomic<std::uint64_t> request_sequence_{1U};
 };
 

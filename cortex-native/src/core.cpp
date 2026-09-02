@@ -5,6 +5,13 @@
 #include <cstring>
 #include <system_error>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace cortex {
 
 Random::Random(std::uint64_t seed)
@@ -409,14 +416,18 @@ void replace_file(const std::filesystem::path& temporary,
         return;
     }
 
-    // Fallback necessário em implementações Windows que recusam sobrescrever o destino.
-    std::filesystem::remove(target, error);
-    error.clear();
-    std::filesystem::rename(temporary, target, error);
-    if (error) {
-        std::filesystem::remove(temporary);
-        throw Error("não foi possível publicar arquivo persistido: " + error.message());
+#ifdef _WIN32
+    // MinGW/Windows pode recusar std::filesystem::rename quando o destino existe.
+    // MoveFileEx substitui sem a janela perigosa de apagar o arquivo válido primeiro.
+    if (::MoveFileExW(temporary.c_str(), target.c_str(),
+                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+        return;
     }
+    error = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
+#endif
+    std::filesystem::remove(temporary);
+    throw Error("não foi possível publicar arquivo persistido sem apagar o original: "
+                + error.message());
 }
 
 } // namespace cortex

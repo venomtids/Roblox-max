@@ -374,16 +374,24 @@ std::string_view web_chat_html() noexcept {
           <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
         </summary>
         <div class="control">
-          <div class="control-line"><span>Temperatura</span><span class="control-value" id="temperatureValue">0.4</span></div>
-          <input id="temperature" type="range" min="0.2" max="1.5" value="0.4" step="0.1" aria-label="Temperatura">
+          <div class="control-line"><span>Modo de potência</span></div>
+          <select id="powerMode" aria-label="Modo de potência">
+            <option value="flash">Flash · resposta rápida</option>
+            <option value="medium" selected>Medium · equilibrado</option>
+            <option value="high">Alta potência · revisão dupla</option>
+          </select>
+        </div>
+        <div class="control">
+          <div class="control-line"><span>Temperatura</span><span class="control-value" id="temperatureValue">0.5</span></div>
+          <input id="temperature" type="range" min="0.2" max="1.5" value="0.5" step="0.1" aria-label="Temperatura">
         </div>
         <div class="control">
           <div class="control-line"><span>Top-k</span></div>
-          <select id="topK" aria-label="Top-k"><option selected>4</option><option>8</option><option>20</option><option>24</option><option>48</option></select>
+          <select id="topK" aria-label="Top-k"><option>4</option><option>8</option><option selected>20</option><option>24</option><option>40</option><option>48</option></select>
         </div>
         <div class="control">
           <div class="control-line"><span>Comprimento máximo</span></div>
-          <select id="maxTokens" aria-label="Máximo de tokens"><option>64</option><option selected>96</option><option>128</option><option>192</option><option>512</option><option>1024</option><option>2048</option><option>4096</option></select>
+          <select id="maxTokens" aria-label="Máximo de tokens"><option>64</option><option>96</option><option>128</option><option>192</option><option>256</option><option>512</option><option selected>1024</option><option>2048</option><option>4096</option></select>
         </div>
         <div class="toggle-line">
           <span>Modelo GGUF local</span>
@@ -446,23 +454,57 @@ std::string_view web_chat_html() noexcept {
   <div class="editor-overlay" id="editorOverlay" role="dialog" aria-modal="true" aria-labelledby="editorTitle">
     <div class="editor-modal">
       <div class="editor-head">
-        <div><h2 id="editorTitle">Autoevolução controlada</h2><p>A API propõe a substituição de um arquivo. Nada é aplicado sem você revisar e confirmar.</p></div>
+        <div><h2 id="editorTitle">Autoevolução supervisionada</h2><p id="editorScopeText">Audite, gere uma proposta com o GGUF local, revise e confirme. Nenhuma mudança é aplicada silenciosamente.</p></div>
         <button class="close-editor" id="closeEditor" type="button" aria-label="Fechar">×</button>
       </div>
-      <label class="editor-field">Arquivo permitido
-        <input id="editFile" value="src/agent.cpp" maxlength="512" spellcheck="false">
+      <div class="editor-warning" id="scopeWarning" hidden></div>
+      <label class="editor-field">Caminho do arquivo
+        <input id="editFile" value="src/agent.cpp" maxlength="4096" spellcheck="false">
       </label>
-      <label class="editor-field">Mudança desejada
-        <textarea id="editInstruction" maxlength="4096" placeholder="Ex.: melhore o tratamento de perguntas curtas sem alterar as APIs públicas"></textarea>
+      <label class="check-row" id="createFileRow" hidden>
+        <input id="createFile" type="checkbox">
+        <span><strong>Criar se não existir</strong><small>O caminho e o conteúdo completos serão mostrados antes da autorização.</small></span>
       </label>
-      <div class="editor-actions"><button class="editor-action primary" id="proposeCode" type="button">Gerar proposta</button></div>
+      <label class="editor-field">Objetivo da mudança
+        <textarea id="editInstruction" maxlength="1024" placeholder="Ex.: melhore o tratamento de perguntas curtas sem alterar as APIs públicas"></textarea>
+      </label>
+      <label class="editor-field">Comportamento observado (opcional)
+        <textarea id="editBehavior" maxlength="1024" placeholder="Cole uma resposta problemática ou descreva uma regressão reproduzível"></textarea>
+      </label>
+      <div class="editor-actions">
+        <button class="editor-action" id="auditCode" type="button">Auditar fonte</button>
+        <button class="editor-action primary" id="refineCode" type="button">Auditar + autorrefinar</button>
+        <button class="editor-action" id="proposeCode" type="button">Proposta manual</button>
+      </div>
+      <div class="editor-warning" id="auditSummary" hidden></div>
       <pre class="code-preview" id="codePreview"></pre>
       <div id="applyArea" hidden>
-        <div class="editor-warning">Revise todo o conteúdo. A aplicação cria backup, mas exige recompilar e reiniciar. Digite a confirmação exibida abaixo.</div>
+        <div class="editor-warning" id="proposalRisk">Revise todo o conteúdo. A aplicação cria backup e exige recompilar/testar.</div>
         <label class="editor-field">Confirmação
           <input id="editConfirmation" autocomplete="off" spellcheck="false">
         </label>
         <div class="editor-actions"><button class="editor-action primary" id="applyCode" type="button">Aplicar alteração</button></div>
+      </div>
+      <div id="rollbackArea" hidden>
+        <div class="editor-warning">Se o teste falhar, reverta enquanto o arquivo não tiver outras alterações.</div>
+        <label class="editor-field">Confirmação de rollback
+          <input id="rollbackConfirmation" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="editor-actions"><button class="editor-action" id="rollbackCode" type="button">Restaurar backup</button></div>
+      </div>
+      <div id="validationArea" hidden>
+        <label class="editor-field">Comando de validação
+          <textarea id="validationCommand" maxlength="16384" spellcheck="false" placeholder="make test && make sanitize-test && make release"></textarea>
+        </label>
+        <div class="editor-actions"><button class="editor-action" id="stageValidation" type="button">Preparar validação</button></div>
+        <div id="validationConsent" hidden>
+          <div class="editor-warning" id="validationPreview"></div>
+          <label class="editor-field">Permissão para executar
+            <input id="validationConfirmation" autocomplete="off" spellcheck="false">
+          </label>
+          <div class="editor-actions"><button class="editor-action primary" id="runValidation" type="button">Executar comando autorizado</button></div>
+        </div>
+        <pre class="code-preview" id="validationOutput"></pre>
       </div>
     </div>
   </div>
@@ -481,6 +523,7 @@ std::string_view web_chat_html() noexcept {
     const conversationTitle = byId("conversationTitle");
     const temperature = byId("temperature");
     const temperatureValue = byId("temperatureValue");
+    const powerMode = byId("powerMode");
     const maxTokens = byId("maxTokens");
     const topK = byId("topK");
     const sidebar = byId("sidebar");
@@ -489,15 +532,18 @@ std::string_view web_chat_html() noexcept {
     let history = [];
     let toastTimer = 0;
     let currentProposal = 0;
+    let currentApplied = 0;
+    let currentValidation = 0;
     let maxTokensTouched = false;
     let topKTouched = false;
     let temperatureTouched = false;
+    let powerTouched = false;
 
     const suggestions = [
-      ["Pesquisar e aprender", "pesquise na internet por computação quântica"],
-      ["Executar benchmark", "benchmark"],
-      ["Testar cálculo local", "Quanto é 17 * (8 + 4) - 9?"],
-      ["Explique a arquitetura", "Como BPE, GRU e memória trabalham juntos?"]
+      ["Aprender programação", "Explique RAII e ownership em programação"],
+      ["Analisar um texto", "analise este texto: Clareza exige estrutura, evidência e revisão."],
+      ["Pesquisar e memorizar", "pesquise na internet por computação quântica"],
+      ["Autoentendimento", "Quais são suas capacidades e limitações?"]
     ];
 
     function welcome() {
@@ -506,7 +552,7 @@ std::string_view web_chat_html() noexcept {
       root.className = "welcome";
       const inner = document.createElement("div");
       inner.className = "welcome-inner";
-      inner.innerHTML = '<div class="logo welcome-logo">C</div><h1>Converse com sua <span>IA nativa</span></h1><p>Benchmark, cálculos e pesquisa HTTPS com fontes funcionam sem API. Use <code>pesquise na internet por…</code> para aprender e reutilizar o resultado offline.</p>';
+      inner.innerHTML = '<div class="logo welcome-logo">C</div><h1>Converse com sua <span>IA nativa</span></h1><p>Base curada, análise textual, memória e pesquisa funcionam sem chave. Escolha Flash, Medium ou Alta potência; <code>--billion</code> ativa Qwen3 1.7B local.</p>';
       const grid = document.createElement("div");
       grid.className = "suggestions";
       for (const [title, text] of suggestions) {
@@ -589,6 +635,25 @@ std::string_view web_chat_html() noexcept {
       toastTimer = setTimeout(() => toast.classList.remove("show"), 4200);
     }
 
+    function applyPowerPreset(markTouched = true) {
+      const presets = {
+        flash: {temperature: "0.3", topK: "8", maxTokens: "256"},
+        medium: {temperature: "0.5", topK: "20", maxTokens: "1024"},
+        high: {temperature: "0.6", topK: "40", maxTokens: "4096"}
+      };
+      const preset = presets[powerMode.value] || presets.medium;
+      temperature.value = preset.temperature;
+      temperatureValue.textContent = preset.temperature;
+      topK.value = preset.topK;
+      maxTokens.value = preset.maxTokens;
+      if (markTouched) {
+        powerTouched = true;
+        temperatureTouched = true;
+        topKTouched = true;
+        maxTokensTouched = true;
+      }
+    }
+
     function resizePrompt() {
       prompt.style.height = "auto";
       prompt.style.height = `${Math.min(prompt.scrollHeight, 150)}px`;
@@ -617,23 +682,34 @@ std::string_view web_chat_html() noexcept {
         const activeParameters = Number(data.language_parameters || 0);
         const contextDetail = Number(data.language_context || 0)
           ? ` · ${Number(data.language_context).toLocaleString("pt-BR")} ctx` : "";
+        const nativeDetail = `${data.knowledge_topics || 0} temas curados · ${data.memories} memórias`;
         byId("runtimeDetail").textContent = activeParameters
-          ? `${activeParameters.toLocaleString("pt-BR")} parâmetros do modelo${contextDetail} · ${data.memories} memórias`
+          ? `${activeParameters.toLocaleString("pt-BR")} parâmetros do modelo${contextDetail} · ${nativeDetail}`
           : data.language_api
-            ? `Parâmetros não informados${contextDetail} · ${data.memories} memórias`
-            : `${data.parameters.toLocaleString("pt-BR")} parâmetros GRU + filtro lógico · ${data.memories} memórias`;
+            ? `Parâmetros não informados${contextDetail} · ${nativeDetail}`
+            : `${data.parameters.toLocaleString("pt-BR")} parâmetros GRU + filtro lógico · ${nativeDetail}`;
         byId("modelLabel").textContent = data.language_api ? data.language_model
           : apiWaiting ? `${data.language_model} · modo local` : data.language_model;
-        if (data.language_api && !maxTokensTouched && maxTokens.value === "96") maxTokens.value = "1024";
-        if (openModelOnline && !topKTouched) topK.value = "20";
-        if (openModelOnline && !temperatureTouched) {
-          temperature.value = "0.6";
-          temperatureValue.textContent = "0.6";
+        if (!powerTouched && data.power_mode) {
+          powerMode.value = data.power_mode;
+          applyPowerPreset(false);
         }
         byId("languageApi").disabled = !data.language_api;
         if (!data.language_api) byId("languageApi").checked = false;
         byId("internet").disabled = !data.internet;
         byId("openSelfEditor").hidden = !data.self_edit;
+        const unrestricted = Boolean(data.unrestricted_self_edit);
+        byId("createFileRow").hidden = !unrestricted;
+        byId("validationArea").hidden = !unrestricted;
+        byId("scopeWarning").hidden = !unrestricted;
+        byId("scopeWarning").textContent = unrestricted
+          ? "Acesso irrestrito supervisionado: caminhos absolutos e arquivos novos são aceitos. Cada escrita ainda exige sua autorização e as permissões da conta/Windows."
+          : "";
+        byId("editorScopeText").textContent = unrestricted
+          ? "A Cortex pode substituir ou criar arquivos em qualquer caminho autorizado pelo sistema. Revise o conteúdo e conceda permissão por operação."
+          : "Audite, gere uma proposta com o GGUF local, revise e confirme. Nenhuma mudança é aplicada silenciosamente.";
+        byId("refineCode").disabled = !data.self_programming;
+        byId("proposeCode").disabled = !data.self_programming;
       } catch (error) {
         byId("statusDot").classList.remove("online");
         byId("runtimeStatus").textContent = "Núcleo offline";
@@ -664,6 +740,7 @@ std::string_view web_chat_html() noexcept {
           body: JSON.stringify({
             message: text,
             conversation,
+            power_mode: powerMode.value,
             temperature: Number(temperature.value),
             top_k: Number(byId("topK").value),
             max_tokens: Number(byId("maxTokens").value),
@@ -682,7 +759,11 @@ std::string_view web_chat_html() noexcept {
           : String(data.provider || "").startsWith("local-") ? `Local · ${data.provider_model}`
           : "Cortex local";
         const learned = data.learned_from_web ? " · salvo para uso offline" : "";
-        const meta = `${provider} · ${data.latency_ms} ms${recalled ? ` · ${recalled} memória${recalled > 1 ? "s" : ""}` : ""}${learned}`;
+        const quality = Number.isFinite(Number(data.quality_score))
+          ? ` · qualidade ${Math.round(Number(data.quality_score) * 100)}%` : "";
+        const revised = data.response_revised ? " · revisão dupla" : "";
+        const mode = data.power_mode ? ` · ${data.power_mode}` : "";
+        const meta = `${provider}${mode} · ${data.latency_ms} ms${quality}${revised}${recalled ? ` · ${recalled} memória${recalled > 1 ? "s" : ""}` : ""}${learned}`;
         appendMessage("assistant", data.reply || "O modelo encerrou a geração sem produzir texto.", meta);
         if (data.warning) showToast(data.warning);
         refreshStatus();
@@ -705,6 +786,63 @@ std::string_view web_chat_html() noexcept {
       byId("editorOverlay").classList.remove("open");
     }
 
+    function showCodeProposal(data) {
+      currentProposal = data.proposal_id;
+      byId("codePreview").textContent = data.replacement;
+      byId("codePreview").classList.add("visible");
+      byId("editConfirmation").placeholder = data.confirmation;
+      byId("editConfirmation").value = "";
+      const operation = data.creates_file ? "CRIAR ARQUIVO" : "SUBSTITUIR ARQUIVO";
+      byId("proposalRisk").textContent = `${operation} · risco ${data.risk_level || "não informado"} · ${data.audit_summary || "revise a alteração completa"}. Nada será escrito sem a confirmação abaixo.`;
+      byId("applyArea").hidden = false;
+    }
+
+    async function auditCodeSource() {
+      const file = byId("editFile").value.trim();
+      if (!file) return showToast("Informe o arquivo que será auditado.");
+      const button = byId("auditCode");
+      button.disabled = true;
+      try {
+        const response = await fetch("/api/code/audit", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({file, behavior: byId("editBehavior").value.trim()})
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        const findings = data.findings && data.findings.length ? data.findings.join("; ") : "nenhum alerta estático";
+        byId("auditSummary").textContent = `Manutenibilidade ${Math.round(data.maintainability_score)}/100 · ${data.lines} linhas · ${findings}`;
+        byId("auditSummary").hidden = false;
+        if (!byId("editInstruction").value.trim()) byId("editInstruction").value = data.suggested_instruction;
+      } catch (error) {
+        showToast(String(error.message || error));
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function refineCodeChange() {
+      const file = byId("editFile").value.trim();
+      const objective = byId("editInstruction").value.trim();
+      if (!file || !objective) return showToast("Informe o arquivo e o objetivo da evolução.");
+      const button = byId("refineCode");
+      button.disabled = true;
+      button.textContent = "Analisando…";
+      try {
+        const response = await fetch("/api/code/refine", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({file, objective, behavior: byId("editBehavior").value.trim()})
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        showCodeProposal(data);
+      } catch (error) {
+        showToast(String(error.message || error));
+      } finally {
+        button.disabled = false;
+        button.textContent = "Auditar + autorrefinar";
+      }
+    }
+
     async function proposeCodeChange() {
       const file = byId("editFile").value.trim();
       const instruction = byId("editInstruction").value.trim();
@@ -715,21 +853,16 @@ std::string_view web_chat_html() noexcept {
       try {
         const response = await fetch("/api/code/propose", {
           method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({file, instruction})
+          body: JSON.stringify({file, instruction, create: byId("createFile").checked})
         });
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
-        currentProposal = data.proposal_id;
-        byId("codePreview").textContent = data.replacement;
-        byId("codePreview").classList.add("visible");
-        byId("editConfirmation").placeholder = data.confirmation;
-        byId("editConfirmation").value = "";
-        byId("applyArea").hidden = false;
+        showCodeProposal(data);
       } catch (error) {
         showToast(String(error.message || error));
       } finally {
         button.disabled = false;
-        button.textContent = "Gerar proposta";
+        button.textContent = "Proposta manual";
       }
     }
 
@@ -747,14 +880,95 @@ std::string_view web_chat_html() noexcept {
         });
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
-        showToast("Fonte alterado com backup. Execute make test e reinicie para ativar.");
+        showToast(data.created_file
+          ? "Arquivo criado com autorização. Valide o sistema; o rollback poderá removê-lo."
+          : "Arquivo alterado com backup. Compile e teste; reverta aqui se houver regressão.");
+        currentApplied = data.proposal_id;
+        byId("rollbackConfirmation").placeholder = data.rollback_confirmation;
+        byId("rollbackConfirmation").value = "";
+        byId("rollbackArea").hidden = false;
         currentProposal = 0;
         byId("applyArea").hidden = true;
-        closeCodeEditor();
       } catch (error) {
         showToast(String(error.message || error));
       } finally {
         button.disabled = false;
+      }
+    }
+
+    async function rollbackCodeChange() {
+      if (!currentApplied) return;
+      const button = byId("rollbackCode");
+      button.disabled = true;
+      try {
+        const response = await fetch("/api/code/rollback", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            proposal_id: currentApplied,
+            confirmation: byId("rollbackConfirmation").value.trim()
+          })
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        currentApplied = 0;
+        byId("rollbackArea").hidden = true;
+        showToast("Backup restaurado. Recompile e reinicie para voltar à versão anterior.");
+      } catch (error) {
+        showToast(String(error.message || error));
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function stageValidationCommand() {
+      const command = byId("validationCommand").value.trim();
+      if (!command) return showToast("Informe o comando exato que deseja validar.");
+      const button = byId("stageValidation");
+      button.disabled = true;
+      try {
+        const response = await fetch("/api/validation/stage", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({command})
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        currentValidation = data.validation_id;
+        byId("validationPreview").textContent = `Comando que será executado com as permissões da Cortex:\n${data.command}`;
+        byId("validationConfirmation").placeholder = data.confirmation;
+        byId("validationConfirmation").value = "";
+        byId("validationConsent").hidden = false;
+      } catch (error) {
+        showToast(String(error.message || error));
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function runValidationCommand() {
+      if (!currentValidation) return;
+      const button = byId("runValidation");
+      button.disabled = true;
+      button.textContent = "Executando…";
+      try {
+        const response = await fetch("/api/validation/run", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            validation_id: currentValidation,
+            confirmation: byId("validationConfirmation").value.trim()
+          })
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        byId("validationOutput").textContent = `Exit code: ${data.exit_code}\nLog: ${data.full_log}\n\n${data.output || "(sem saída)"}`;
+        byId("validationOutput").classList.add("visible");
+        showToast(data.exit_code === 0 ? "Validação concluída com sucesso." : `Validação terminou com código ${data.exit_code}.`);
+        currentValidation = 0;
+        byId("validationConsent").hidden = true;
+      } catch (error) {
+        showToast(String(error.message || error));
+      } finally {
+        button.disabled = false;
+        button.textContent = "Executar comando autorizado";
       }
     }
 
@@ -783,6 +997,7 @@ std::string_view web_chat_html() noexcept {
       temperatureTouched = true;
       temperatureValue.textContent = Number(temperature.value).toFixed(1);
     });
+    powerMode.addEventListener("change", () => applyPowerPreset(true));
     topK.addEventListener("change", () => { topKTouched = true; });
     maxTokens.addEventListener("change", () => { maxTokensTouched = true; });
     byId("newChat").addEventListener("click", clearConversation);
@@ -790,8 +1005,13 @@ std::string_view web_chat_html() noexcept {
     backdrop.addEventListener("click", closeSidebar);
     byId("openSelfEditor").addEventListener("click", openCodeEditor);
     byId("closeEditor").addEventListener("click", closeCodeEditor);
+    byId("auditCode").addEventListener("click", auditCodeSource);
+    byId("refineCode").addEventListener("click", refineCodeChange);
     byId("proposeCode").addEventListener("click", proposeCodeChange);
     byId("applyCode").addEventListener("click", applyCodeChange);
+    byId("rollbackCode").addEventListener("click", rollbackCodeChange);
+    byId("stageValidation").addEventListener("click", stageValidationCommand);
+    byId("runValidation").addEventListener("click", runValidationCommand);
     byId("editorOverlay").addEventListener("click", (event) => {
       if (event.target === byId("editorOverlay")) closeCodeEditor();
     });

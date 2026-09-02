@@ -1,5 +1,7 @@
 #include "cortex/reasoner.hpp"
 
+#include "cortex/knowledge.hpp"
+#include "cortex/quality.hpp"
 #include "cortex/tokenizer.hpp"
 
 #include <algorithm>
@@ -180,6 +182,59 @@ namespace {
         if (found != std::string_view::npos) content_end = std::min(content_end, found);
     }
     return conversation.substr(content_begin, content_end - content_begin);
+}
+
+[[nodiscard]] std::string_view last_assistant_turn(std::string_view conversation) noexcept {
+    constexpr std::array<std::string_view, 3U> assistant_markers{
+        "Assistente:", "Assistant:", "Cortex:"
+    };
+    std::size_t latest = std::string_view::npos;
+    std::size_t content_begin = 0U;
+    for (const std::string_view marker : assistant_markers) {
+        const std::size_t found = conversation.rfind(marker);
+        if (found != std::string_view::npos
+            && (latest == std::string_view::npos || found > latest)) {
+            latest = found;
+            content_begin = found + marker.size();
+        }
+    }
+    if (latest == std::string_view::npos) return {};
+    while (content_begin < conversation.size()
+           && (conversation[content_begin] == ' ' || conversation[content_begin] == '\t')) {
+        ++content_begin;
+    }
+    std::size_t content_end = conversation.size();
+    for (const std::string_view marker : {
+             std::string_view{"\nUsuário:"}, std::string_view{"\nUsuario:"},
+             std::string_view{"\nUser:"}, std::string_view{"\nAssistente:"},
+             std::string_view{"\nAssistant:"}, std::string_view{"\nCortex:"}}) {
+        const std::size_t found = conversation.find(marker, content_begin);
+        if (found != std::string_view::npos) content_end = std::min(content_end, found);
+    }
+    while (content_end > content_begin
+           && (conversation[content_end - 1U] == '\r'
+               || conversation[content_end - 1U] == '\n')) {
+        --content_end;
+    }
+    return conversation.substr(content_begin, content_end - content_begin);
+}
+
+[[nodiscard]] std::string_view text_after_colon(std::string_view prompt) noexcept {
+    const std::size_t colon = prompt.find(':');
+    if (colon == std::string_view::npos) return {};
+    std::size_t begin = colon + 1U;
+    while (begin < prompt.size()
+           && (prompt[begin] == ' ' || prompt[begin] == '\t'
+               || prompt[begin] == '\r' || prompt[begin] == '\n')) {
+        ++begin;
+    }
+    std::size_t end = prompt.size();
+    while (end > begin
+           && (prompt[end - 1U] == ' ' || prompt[end - 1U] == '\t'
+               || prompt[end - 1U] == '\r' || prompt[end - 1U] == '\n')) {
+        --end;
+    }
+    return prompt.substr(begin, end - begin);
 }
 
 class ExpressionParser final {
@@ -632,6 +687,36 @@ std::optional<NativeAnswer> reason_locally(std::string_view prompt,
             LocalResponseMode::safe_fallback};
     }
 
+    if (contains_any(normalized_prompt, {
+            "analise seu comportamento", "analise sua resposta", "autoanalise",
+            "avalie sua resposta", "como foi sua resposta"
+        })) {
+        const std::string_view previous_answer = last_assistant_turn(conversation_context);
+        const std::string_view previous_question = last_user_turn(conversation_context);
+        if (previous_answer.empty()) {
+            return NativeAnswer{
+                "Ainda não há uma resposta anterior no contexto para analisar. Depois de uma resposta, "
+                "peça `analise sua resposta` e eu medirei relevância, coerência, repetição e estrutura.",
+                LocalResponseMode::self_analysis};
+        }
+        return NativeAnswer{
+            format_response_analysis(previous_question, previous_answer),
+            LocalResponseMode::self_analysis};
+    }
+
+    if (contains_any(normalized_prompt, {
+            "analise este texto", "analise o texto", "analisar este texto",
+            "analisar texto", "analyze this text"
+        })) {
+        const std::string_view subject = text_after_colon(prompt);
+        if (subject.empty()) {
+            return NativeAnswer{
+                "Envie o conteúdo depois de dois-pontos. Exemplo: `analise este texto: ...`.",
+                LocalResponseMode::text_analysis};
+        }
+        return NativeAnswer{format_text_analysis(subject), LocalResponseMode::text_analysis};
+    }
+
     std::string intent = normalized_prompt;
     if (generic_follow_up(normalized_prompt) && !conversation_context.empty()) {
         const std::string_view previous_question = last_user_turn(conversation_context);
@@ -687,10 +772,11 @@ std::optional<NativeAnswer> reason_locally(std::string_view prompt,
             "cortex esta online", "sistema funcionando"
         })) {
         std::ostringstream status;
-        status << "Sim. O núcleo local está funcionando com o Cortex Native Reasoner, GRU "
-               << model.config().layer_count << 'x' << model.config().hidden_size << " e "
-               << model.parameter_count() << " parâmetros neurais. Digite `benchmark` para medir "
-                  "o forward ou uma expressão como `2*(8+3)` para testar a lógica.";
+        status << "Sim. O núcleo local está funcionando com reasoner, filtro de qualidade, "
+               << curated_knowledge_size() << " temas curados e GRU "
+               << model.config().layer_count << 'x' << model.config().hidden_size << " de "
+               << model.parameter_count() << " parâmetros auxiliares. Digite `benchmark`, peça "
+                  "uma análise de texto ou use `--billion` para o Qwen3 1.7B local.";
         return NativeAnswer{status.str(), LocalResponseMode::knowledge};
     }
 
@@ -742,10 +828,11 @@ std::optional<NativeAnswer> reason_locally(std::string_view prompt,
             "me ajude", "ajuda", "help"
         })) {
         return NativeAnswer{
-            "Posso, sem API: executar `benchmark`; calcular expressões como `2*(8+3)`; explicar "
-            "BPE, GRU, memória, concorrência e segurança; guardar e recuperar lembranças; pesquisar "
-            "na internet quando essa opção estiver ligada; e conversar com um modelo GGUF executado "
-            "localmente. Para evitar invenções, assumo quando o conhecimento local não é suficiente.",
+            "Posso, sem chave: executar benchmark e cálculos; consultar uma base curada com foco em "
+            "programação; analisar estrutura, relevância e repetição de textos; guardar memórias; "
+            "pesquisar com fontes; e avaliar meu comportamento recente. Com `--billion`, uso Qwen3 "
+            "1.7B local para redação ampla. A autoevolução audita e propõe código, mas aplicação e "
+            "rollback continuam sob confirmação humana.",
             LocalResponseMode::knowledge};
     }
 
@@ -758,11 +845,11 @@ std::optional<NativeAnswer> reason_locally(std::string_view prompt,
             "arquitetura", "como cortex funciona", "componentes do cortex", "resuma o cortex"
         })) {
         return NativeAnswer{
-            "A arquitetura possui quatro caminhos: (1) BPE converte UTF-8 em tokens; (2) o GRU "
-            "produz embeddings e mantém o fallback leve; (3) a memória persistente recupera episódios "
-            "por similaridade; e (4) o orquestrador C++ combina conversa, memória e internet antes de "
-            "usar uma ferramenta nativa ou um GGUF local. Respostas probabilísticas passam por uma "
-            "verificação de relevância.",
+            "A arquitetura possui seis caminhos: BPE/GRU para embeddings; memória vetorial; base "
+            "curada multidisciplinar; ferramentas e análise textual determinísticas; pesquisa HTTPS "
+            "com fontes; e Qwen3 GGUF para geração ampla. O orquestrador C++ escolhe Flash, Medium ou "
+            "Alta potência e toda saída probabilística passa por relevância, coerência e repetição; "
+            "Alta potência pode executar uma segunda revisão.",
             LocalResponseMode::knowledge};
     }
 
@@ -770,8 +857,8 @@ std::optional<NativeAnswer> reason_locally(std::string_view prompt,
         return NativeAnswer{
             "Cortex não precisa de API. Benchmark, cálculos, memória, servidor e fallback funcionam "
             "no executável C++20. Para conhecimento geral mais amplo, `cortex serve --state state "
-            "--local` inicia pesos GGUF no seu computador; isso não usa chave nem envia o chat a um "
-            "provedor externo.",
+            "--billion` inicia Qwen3 1.7B no seu computador; isso não usa chave nem envia o chat a "
+            "um provedor externo.",
             LocalResponseMode::knowledge};
     }
 
@@ -780,11 +867,11 @@ std::optional<NativeAnswer> reason_locally(std::string_view prompt,
             "modelo voce usa", "mais inteligente", "melhorar inteligencia", "parametros"
         })) {
         std::ostringstream model_description;
-        model_description << "Sem um GGUF ativo, o modo confiável combina raciocínio determinístico, "
-                             "memória e o GRU carregado de " << model.parameter_count()
-                          << " parâmetros. O comando `cortex models` mostra perfis Qwen3 de 0,6B a "
-                             "30,5B; `cortex serve --state state --local` escolhe um pela RAM e o "
-                             "executa localmente via llama.cpp, sem API.";
+        model_description << "Sem um GGUF ativo, o modo confiável combina base curada, análise, "
+                             "memória e o GRU auxiliar de " << model.parameter_count()
+                          << " parâmetros. `cortex serve --state state --billion` ativa Qwen3 1.7B "
+                             "via llama.cpp, atingindo mais de um bilhão de parâmetros funcionais sem "
+                             "chave; máquinas maiores podem selecionar até 30,5B com `cortex models`.";
         return NativeAnswer{model_description.str(), LocalResponseMode::knowledge};
     }
 
@@ -832,17 +919,23 @@ std::optional<NativeAnswer> reason_locally(std::string_view prompt,
 
     if (contains_any(intent, {"internet", "pesquisa online", "pesquisar na web", "duckduckgo"})) {
         return NativeAnswer{
-            "A internet é opcional e fica desligada por conversa até você ativá-la. A busca consulta "
-            "por HTTPS o Instant Answer do DuckDuckGo, limita o tamanho da resposta e inclui a fonte. "
-            "Sem resultado objetivo, Cortex não deve inventar um fato recente.",
+            "A internet é opcional. Um comando explícito pesquisa mesmo com o checkbox desligado: "
+            "DuckDuckGo é a primeira fonte e Wikipedia em português é o fallback. A resposta registra "
+            "nome e URL HTTPS e entra na memória `[WEB]`; sem resultado objetivo, Cortex não inventa "
+            "um fato recente.",
             LocalResponseMode::knowledge};
     }
 
-    if (contains_any(intent, {"autoedicao", "mudar codigo", "alterar codigo", "editar codigo"})) {
+    if (contains_any(intent, {
+            "autoedicao", "mudar codigo", "alterar codigo", "editar codigo",
+            "automodificar", "autoprogramacao"
+        })) {
         return NativeAnswer{
-            "A autoedição é controlada: primeiro é criada uma proposta para um arquivo permitido; "
-            "depois uma pessoa revisa o conteúdo e digita uma confirmação específica. A aplicação "
-            "gera backup e nunca recompila nem reinicia silenciosamente.",
+            "A autoevolução possui dois níveis. O padrão limita fontes do projeto. Com "
+            "`--unrestricted-self-edit --host 127.0.0.1`, Cortex pode substituir ou criar arquivos "
+            "em qualquer caminho aceito pela conta/Windows e preparar comandos livres de validação. "
+            "Cada operação permanece visível e pede `APLICAR ID` ou `EXECUTAR ID`; o Windows ainda "
+            "pode solicitar UAC. Backups, hash e rollback evitam alterações silenciosas.",
             LocalResponseMode::knowledge};
     }
 
@@ -901,48 +994,24 @@ std::optional<NativeAnswer> reason_locally(std::string_view prompt,
     if (std::optional<NativeAnswer> web = recalled_web_knowledge(prompt, memories)) {
         return web;
     }
+    if (std::optional<CuratedKnowledgeAnswer> curated = lookup_curated_knowledge(intent)) {
+        return NativeAnswer{std::move(curated->text), LocalResponseMode::curated_knowledge};
+    }
     return std::nullopt;
 }
 
 bool neural_response_is_relevant(std::string_view prompt, std::string_view response) {
-    if (response.size() < 12U || response.size() > 4'096U) return false;
-    const std::string normalized_response = normalize_words(response);
-    if (normalized_response.empty()) return false;
-    if (contains_any(normalized_response, {
-            "como posso ajudar", "estou pronta para responder", "posso explicar mas preciso",
-            "diga sua pergunta", "qual assunto voce quer", "vou responder somente",
-            "nao consegui formular"
-        })) {
-        return false;
-    }
-    if (response.find("Usuário:") != std::string_view::npos
-        || response.find("Sistema:") != std::string_view::npos
-        || response.find("Assistant:") != std::string_view::npos) {
-        return false;
-    }
-
-    const std::set<std::string> query_words = content_words(prompt);
-    const std::set<std::string> answer_words = content_words(response);
-    if (query_words.empty() || answer_words.size() < 2U) return false;
-    std::size_t overlap = 0U;
-    for (const std::string& word : query_words) {
-        if (answer_words.contains(word)) ++overlap;
-    }
-    const std::size_t required = query_words.size() >= 3U ? 2U : 1U;
-    if (overlap < required) return false;
-
-    // Repetição extrema costuma indicar colapso autoregressivo do checkpoint pequeno.
-    const std::vector<std::string> sequence = split_words(normalized_response);
-    std::set<std::string> unique(sequence.begin(), sequence.end());
-    return sequence.size() < 12U || unique.size() * 3U >= sequence.size();
+    // Um único avaliador agora protege tanto o GRU quanto modelos GGUF: ele combina
+    // aderência lexical, estrutura, repetição e vazamento de marcadores de diálogo.
+    return assess_response(prompt, response).accepted;
 }
 
 NativeAnswer safe_local_fallback() {
     return NativeAnswer{
         "Não encontrei conhecimento local confiável suficiente para responder a isso. Para não "
-        "inventar, descartei a continuação probabilística do GRU. Posso executar benchmark, cálculos "
-        "e explicar os componentes da Cortex agora. Para conhecimento geral amplo sem API, inicie "
-        "um modelo GGUF local com `cortex serve --state state --local`.",
+        "inventar, descartei a continuação probabilística. Posso executar benchmark, cálculos, análise "
+        "textual e consultar a base curada agora. Para redação e conhecimento geral mais amplos sem "
+        "chave, inicie Qwen3 1.7B com `cortex serve --state state --billion`.",
         LocalResponseMode::safe_fallback};
 }
 
@@ -954,6 +1023,9 @@ std::string_view local_response_mode_name(LocalResponseMode mode) noexcept {
     case LocalResponseMode::benchmark: return "local-benchmark";
     case LocalResponseMode::memory: return "local-memory";
     case LocalResponseMode::web_knowledge: return "local-web-knowledge";
+    case LocalResponseMode::curated_knowledge: return "local-curated-knowledge";
+    case LocalResponseMode::text_analysis: return "local-text-analysis";
+    case LocalResponseMode::self_analysis: return "local-self-analysis";
     case LocalResponseMode::safe_fallback: return "local-safe";
     }
     return "local-safe";

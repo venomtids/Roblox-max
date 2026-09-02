@@ -155,6 +155,33 @@ struct StatePaths final {
     return value != nullptr && *value != '\0' ? std::string(value) : std::move(fallback);
 }
 
+[[nodiscard]] std::optional<fs::path> executable_on_path(std::string executable) {
+    if (executable.empty()) return std::nullopt;
+#ifdef _WIN32
+    if (fs::path(executable).extension().empty()) executable += ".exe";
+    constexpr char separator = ';';
+#else
+    constexpr char separator = ':';
+#endif
+    const fs::path direct(executable);
+    if (direct.has_parent_path() && fs::is_regular_file(direct)) return direct;
+    const std::string path = environment_value("PATH");
+    std::size_t begin = 0U;
+    while (begin <= path.size()) {
+        const std::size_t end = path.find(separator, begin);
+        const std::string_view directory(path.data() + begin,
+                                         (end == std::string::npos ? path.size() : end) - begin);
+        if (!directory.empty()) {
+            const fs::path candidate = fs::path(std::string(directory)) / executable;
+            std::error_code error;
+            if (fs::is_regular_file(candidate, error)) return candidate;
+        }
+        if (end == std::string::npos) break;
+        begin = end + 1U;
+    }
+    return std::nullopt;
+}
+
 [[nodiscard]] StatePaths state_paths(const Arguments& arguments) {
     const fs::path directory = arguments.get("state", "state");
     return StatePaths{
@@ -214,13 +241,22 @@ struct Runtime final {
 
 [[nodiscard]] cortex::AgentOptions agent_options(const Arguments& arguments) {
     cortex::AgentOptions options;
-    options.memory_hits = arguments.size_value("memory-hits", options.memory_hits);
-    options.minimum_memory_score = arguments.float_value("memory-score",
-                                                          options.minimum_memory_score);
-    options.maximum_context_tokens = arguments.size_value("context",
-                                                           options.maximum_context_tokens);
+    const std::string requested_power = arguments.get(
+        "power", arguments.get("power-mode", "medium"));
+    options.power_mode = cortex::parse_power_mode(requested_power);
+    const cortex::PowerProfile& profile = cortex::power_profile(options.power_mode);
+    options.memory_hits = arguments.size_value("memory-hits", profile.memory_hits);
+    options.minimum_memory_score = arguments.float_value(
+        "memory-score", options.power_mode == cortex::PowerMode::flash ? 0.70F
+                        : options.power_mode == cortex::PowerMode::high ? 0.55F : 0.65F);
+    options.maximum_context_tokens = arguments.size_value("context", profile.context_tokens);
     options.remember_interaction = !arguments.flag("no-remember", false);
-    options.generation = generation_options(arguments);
+    options.generation.maximum_tokens = arguments.size_value("tokens", profile.maximum_tokens);
+    options.generation.top_k = arguments.size_value("top-k", profile.top_k);
+    options.generation.temperature = arguments.float_value("temperature", profile.temperature);
+    options.generation.repetition_penalty = arguments.float_value(
+        "repetition", profile.repetition_penalty);
+    options.generation.seed = arguments.u64_value("seed", options.generation.seed);
     return options;
 }
 
@@ -243,6 +279,8 @@ Uso:
   cortex train    --corpus ARQUIVO [--state DIR] [opções]
   cortex generate --prompt "texto" [--state DIR] [opções]
   cortex ask      --prompt "pergunta" [--state DIR] [opções]
+  cortex analyze  --text "texto" [--prompt "pergunta original"]
+  cortex doctor   [--state DIR] (diagnóstico de execução, inclusive Windows)
   cortex remember --text "fato persistente" [--state DIR]
   cortex recall   --query "consulta" [--state DIR] [--limit 5]
   cortex forget   --id N [--state DIR]
@@ -257,12 +295,14 @@ Treinamento:
   --epochs 25 --sequence 64 --learning-rate 0.0025 --gradient-clip 1.0
 
 Geração/agente:
-  --tokens 96 --top-k 8 --temperature 0.6 --repetition 1.08 --seed N
-  --memory-hits 3 --memory-score 0.65 --context 512 --no-remember
+  --power flash|medium|high (custo, contexto e revisão)
+  --tokens N --top-k N --temperature N --repetition N --seed N
+  --memory-hits N --memory-score N --context N --no-remember
 
 Interface web, modelo aberto local, internet e APIs:
   --host 0.0.0.0 --port 8080 --workers 4 [--no-internet]
   --local [--local-profile tiny|edge|daily|workstation|max]
+  --billion  (atalho local sem chave para Qwen3 1.7B)
   --local-model ARQUIVO.gguf | --local-hf ORG/MODELO:QUANTIZACAO
   --llama-server CAMINHO --local-port 8081 --local-context 8192
   --local-threads N --local-gpu-layers N --local-startup-timeout 1200
@@ -270,6 +310,7 @@ Interface web, modelo aberto local, internet e APIs:
   --llm-url URL --llm-model MODELO [--llm-key-env NOME]
   --llm-reasoning low|medium|high [--llm-timeout 45]
   --enable-self-edit --source-root .   (proposta + confirmação humana obrigatória)
+  --unrestricted-self-edit             (arquivos novos/externos; somente loopback)
 
 Exemplo rápido:
   make release
@@ -369,6 +410,46 @@ void command_ask(const Arguments& arguments) {
     }
 }
 
+void command_analyze(const Arguments& arguments) {
+    const std::string text = required_text(arguments, "text");
+    const std::string prompt = arguments.get("prompt");
+    std::cout << (prompt.empty()
+        ? cortex::format_text_analysis(text)
+        : cortex::format_response_analysis(prompt, text)) << '\n';
+}
+
+void command_doctor(const Arguments& arguments) {
+    const StatePaths paths = state_paths(arguments);
+    const std::string llama_name = arguments.get(
+        "llama-server", environment_value("CORTEX_LLAMA_SERVER", "llama-server"));
+    const std::optional<fs::path> curl = executable_on_path(
+#ifdef _WIN32
+        "curl.exe"
+#else
+        "curl"
+#endif
+    );
+    const std::optional<fs::path> llama = executable_on_path(llama_name);
+    const std::size_t memory_gib = cortex::system_memory_gib();
+    const bool state_ready = fs::is_regular_file(paths.tokenizer)
+                             && fs::is_regular_file(paths.model);
+    const bool billion_ready = memory_gib >= 4U && llama.has_value();
+    std::cout << "Diagnóstico Cortex\n"
+#ifdef _WIN32
+              << "- Plataforma compilada: Windows nativo\n"
+#else
+              << "- Plataforma compilada: POSIX (gere cortex.exe no Windows com build-windows.cmd)\n"
+#endif
+              << "- RAM detectada: " << memory_gib << " GiB\n"
+              << "- Estado GRU: " << (state_ready ? "pronto" : "ausente; execute train") << '\n'
+              << "- Cliente HTTPS curl: " << (curl ? curl->string() : "não encontrado") << '\n'
+              << "- llama-server: " << (llama ? llama->string() : "não encontrado") << '\n'
+              << "- Camada >= 1 bilhão: "
+              << (billion_ready ? "pronta para Qwen3 1.7B"
+                                : "requer pelo menos 4 GiB e llama-server") << '\n'
+              << "- Comando recomendado: cortex serve --state state --billion --power medium\n";
+}
+
 void command_remember(const Arguments& arguments) {
     const StatePaths paths = state_paths(arguments);
     Runtime runtime = load_runtime(paths);
@@ -451,9 +532,16 @@ void command_chat(const Arguments& arguments) {
 
 void command_serve(const Arguments& arguments) {
     const StatePaths paths = state_paths(arguments);
-    Runtime runtime = load_runtime(paths);
     cortex::WebServerOptions options;
     options.bind_address = arguments.get("host", options.bind_address);
+    options.unrestricted_self_edit = arguments.flag("unrestricted-self-edit", false);
+    options.self_edit_enabled = arguments.flag("enable-self-edit", false)
+                                || options.unrestricted_self_edit;
+    if (options.self_edit_enabled && options.bind_address != "127.0.0.1") {
+        throw Error("autoedição exige --host 127.0.0.1 para pedir autorização local");
+    }
+    options.source_root = arguments.get("source-root", ".");
+    Runtime runtime = load_runtime(paths);
     const std::size_t port = arguments.size_value("port", options.port);
     if (port == 0U || port > 65'535U) {
         throw Error("--port deve estar entre 1 e 65535");
@@ -470,13 +558,19 @@ void command_serve(const Arguments& arguments) {
 
     const bool custom_local_path = arguments.has("local-model");
     const bool custom_local_hf = arguments.has("local-hf");
+    const bool billion_requested = arguments.flag("billion", false);
     if (custom_local_path && custom_local_hf) {
         throw Error("use somente um entre --local-model e --local-hf");
     }
     if (arguments.has("local-profile") && (custom_local_path || custom_local_hf)) {
         throw Error("--local-profile não pode ser combinado com uma fonte local customizada");
     }
-    const bool local_requested = arguments.flag("local", false)
+    if (billion_requested && (custom_local_path || custom_local_hf
+                              || (arguments.has("local-profile")
+                                  && arguments.get("local-profile") != "edge"))) {
+        throw Error("--billion usa o perfil edge 1.7B e não aceita outro modelo");
+    }
+    const bool local_requested = arguments.flag("local", false) || billion_requested
                                  || arguments.has("local-profile")
                                  || custom_local_path || custom_local_hf;
     std::optional<cortex::OpenModelProfile> selected_profile;
@@ -486,9 +580,11 @@ void command_serve(const Arguments& arguments) {
         cortex::LocalModelOptions local;
         if (!custom_local_path && !custom_local_hf) {
             const std::size_t memory_gib = cortex::system_memory_gib();
-            selected_profile = arguments.has("local-profile")
-                ? cortex::open_model_profile(arguments.get("local-profile"))
-                : cortex::recommended_open_model_profile(memory_gib);
+            selected_profile = billion_requested
+                ? cortex::open_model_profile("edge")
+                : arguments.has("local-profile")
+                    ? cortex::open_model_profile(arguments.get("local-profile"))
+                    : cortex::recommended_open_model_profile(memory_gib);
             std::cout << "Perfil local: " << selected_profile->id << " ("
                       << selected_profile->display_name << ") | RAM detectada: "
                       << (memory_gib == 0U ? "desconhecida" : std::to_string(memory_gib) + " GiB")
@@ -562,8 +658,6 @@ void command_serve(const Arguments& arguments) {
         || options.language_api.timeout_seconds > 300U) {
         throw Error("--llm-timeout deve estar entre 1 e 300 segundos");
     }
-    options.self_edit_enabled = arguments.flag("enable-self-edit", false);
-    options.source_root = arguments.get("source-root", ".");
     cortex::run_web_chat_server(runtime.tokenizer, runtime.model, runtime.memory, options);
 }
 
@@ -643,6 +737,10 @@ int main(int argc, char** argv) {
             command_generate(arguments);
         } else if (command == "ask") {
             command_ask(arguments);
+        } else if (command == "analyze") {
+            command_analyze(arguments);
+        } else if (command == "doctor") {
+            command_doctor(arguments);
         } else if (command == "remember") {
             command_remember(arguments);
         } else if (command == "recall") {

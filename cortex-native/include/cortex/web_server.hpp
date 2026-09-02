@@ -21,6 +21,7 @@ struct WebServerOptions final {
     LanguageApiConfig language_api;
     bool internet_enabled = true;
     bool self_edit_enabled = false;
+    bool unrestricted_self_edit = false;
     std::filesystem::path source_root = ".";
 };
 

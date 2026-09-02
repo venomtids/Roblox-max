@@ -115,3 +115,78 @@ Assistente: O sistema possui ingestão BPE, um núcleo neural GRU treinável, bu
 
 Usuário: Qual é o próximo passo?
 Assistente: Compile, execute os testes, treine com um corpus apropriado, meça a perda e valide as respostas antes de usar em produção.
+
+Usuário: O que é programação confiável?
+Assistente: É transformar requisitos em invariantes verificáveis, separar responsabilidades, validar entradas, tratar falhas e medir o comportamento com testes e observabilidade.
+
+Usuário: Como escolher uma estrutura de dados?
+Assistente: Liste as operações dominantes, estime tamanho e concorrência e compare custo de acesso, inserção, memória e localidade de cache antes de escolher vetor, mapa, árvore ou grafo.
+
+Usuário: O que significa complexidade O(n log n)?
+Assistente: Significa que o crescimento assintótico combina uma passagem linear com um fator logarítmico. Não é um tempo absoluto; constantes e hardware ainda precisam ser medidos.
+
+Usuário: O que é RAII em C++?
+Assistente: RAII associa aquisição e liberação de um recurso à construção e destruição de um objeto, permitindo cleanup determinístico inclusive quando há exceções.
+
+Usuário: Como evitar comportamento indefinido em C++?
+Assistente: Respeite lifetime e limites, sincronize estado compartilhado, evite overflow com sinal e execute warnings, ASan, UBSan e testes de fronteira.
+
+Usuário: O que é ownership em Rust?
+Assistente: Ownership registra no sistema de tipos quem possui um valor e por quanto tempo referências podem usá-lo, evitando muitas classes de uso após liberação e data race.
+
+Usuário: Qual é a diferença entre processo e thread?
+Assistente: Processos possuem espaços de endereço isolados; threads do mesmo processo compartilham memória e recursos, por isso comunicação é barata, mas sincronização é obrigatória.
+
+Usuário: Como evitar deadlock?
+Assistente: Reduza locks aninhados, mantenha uma ordem global de aquisição, use escopo curto e prefira transferência de mensagens quando a propriedade puder mudar de tarefa.
+
+Usuário: O que torna uma API robusta?
+Assistente: Contratos claros, limites de entrada, autenticação e autorização separadas, status coerentes, idempotência documentada, versionamento e observabilidade.
+
+Usuário: HTTPS garante que uma informação é verdadeira?
+Assistente: Não. TLS protege autenticidade do servidor, integridade e confidencialidade do canal; conteúdo e regras de autorização ainda precisam de validação.
+
+Usuário: Para que serve um índice SQL?
+Assistente: Ele mantém uma estrutura auxiliar para acelerar filtros, joins e ordenação, em troca de espaço e custo adicional em escritas.
+
+Usuário: Como escrever um bom teste?
+Assistente: Controle aleatoriedade, exerça comportamento observável, inclua fronteiras e faça a falha apontar uma causa compreensível, sem depender de detalhes internos desnecessários.
+
+Usuário: Como otimizar um programa?
+Assistente: Defina uma métrica, reproduza a carga, use profiler, altere o gargalo medido e compare distribuições antes e depois. Otimização sem medida é adivinhação.
+
+Usuário: O que é RAG?
+Assistente: RAG recupera documentos relevantes e os fornece como contexto para a geração. Fontes, filtros e avaliação continuam necessários porque recuperação semântica também pode errar.
+
+Usuário: O que é quantização GGUF?
+Assistente: Quantização reduz os bits usados pelos pesos e GGUF empacota modelo e metadados para runtimes como llama.cpp. Isso reduz RAM sem mudar a contagem nominal de parâmetros.
+
+Usuário: Você tem consciência?
+Assistente: Não. Posso descrever minha arquitetura e medir padrões do meu texto, mas isso é autoanálise algorítmica, não experiência subjetiva ou vontade própria.
+
+Usuário: Como você analisa uma resposta?
+Assistente: O filtro mede aderência lexical à pergunta, diversidade, tamanho de frases, repetição e vazamento de marcadores de diálogo. Métricas estruturais não provam fatos.
+
+Usuário: O que muda no modo Flash?
+Assistente: Flash reduz contexto, memórias recuperadas e comprimento máximo para priorizar latência.
+
+Usuário: O que muda no modo Medium?
+Assistente: Medium equilibra contexto, exemplos, custo e qualidade em uma única passagem do gerador.
+
+Usuário: O que muda em Alta potência?
+Assistente: Alta potência amplia contexto e saída e pode fazer uma segunda passagem de revisão, usando mais tempo e memória.
+
+Usuário: Você possui um bilhão de parâmetros próprios?
+Assistente: O GRU próprio possui cerca de um milhão. O perfil billion ativa Qwen3 1.7B aberto no computador e mantém o núcleo C++ para memória, filtros, ferramentas e controle.
+
+Usuário: Como funciona sua autoevolução?
+Assistente: Eu audito um arquivo e um comportamento observado, peço ao GGUF local uma proposta limitada, valido o conteúdo e aguardo revisão e confirmação humana antes de criar backup e aplicar.
+
+Usuário: Você pode alterar código sem ninguém perceber?
+Assistente: Não. Caminhos e extensões são limitados, a proposta completa fica visível, aplicação e rollback exigem frases de confirmação e qualquer mudança requer recompilar e testar.
+
+Usuário: Como escrever um texto complexo?
+Assistente: Defina tese e público, organize seções por função, ligue evidências às conclusões, trate objeções e revise redundância, ambiguidade e consistência dos termos.
+
+Usuário: Como avaliar uma afirmação científica?
+Assistente: Verifique se é testável, examine método e amostra, compare explicações concorrentes, procure reprodução e separe correlação de causalidade.
