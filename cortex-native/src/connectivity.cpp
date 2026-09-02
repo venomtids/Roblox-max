@@ -42,6 +42,31 @@ struct ProcessResult final {
     return std::string(text.substr(0U, limit)) + "…";
 }
 
+// Valores sensíveis seguem pelo stdin de `curl --config -`, nunca pela linha de
+// comando visível a outros processos. O quoting abaixo é o formato nativo do curl.
+[[nodiscard]] std::string curl_config_quote(std::string_view value) {
+    std::string quoted;
+    quoted.reserve(value.size() + 2U);
+    quoted.push_back('"');
+    for (const unsigned char character : value) {
+        switch (character) {
+        case '\\': quoted += "\\\\"; break;
+        case '"': quoted += "\\\""; break;
+        case '\t': quoted += "\\t"; break;
+        case '\n': quoted += "\\n"; break;
+        case '\r': quoted += "\\r"; break;
+        case '\v': quoted += "\\v"; break;
+        default:
+            if (character < 0x20U) {
+                throw Error("JSON/cabeçalho contém controle incompatível com curl");
+            }
+            quoted.push_back(static_cast<char>(character));
+        }
+    }
+    quoted.push_back('"');
+    return quoted;
+}
+
 #ifndef _WIN32
 
 [[nodiscard]] ProcessResult run_process(const std::vector<std::string>& arguments,
@@ -527,24 +552,31 @@ NativeHttpResponse NativeHttpClient::perform(
         "--request", std::string(method),
         "--write-out", std::string(status_marker) + "%{http_code}"
     };
+    std::string process_input;
     if (method == "POST") {
-        arguments.emplace_back("--header");
-        arguments.emplace_back("Content-Type: application/json");
-        arguments.emplace_back("--data-binary");
-        arguments.emplace_back("@-");
-    }
-    for (const auto& [name, value] : headers) {
-        if (name.empty() || name.find_first_of("\r\n:") != std::string::npos
-            || value.find_first_of("\r\n") != std::string::npos) {
-            throw Error("cabeçalho de saída inválido");
+        // O corpo e todos os headers entram por um pipe de configuração. Isso evita
+        // expor tanto a chave Bearer quanto a conversa em argv ou em arquivo temporário.
+        std::ostringstream config;
+        config << "header = " << curl_config_quote("Content-Type: application/json") << '\n';
+        for (const auto& [name, value] : headers) {
+            if (name.empty() || name.find_first_of("\r\n:") != std::string::npos
+                || value.find_first_of("\r\n") != std::string::npos) {
+                throw Error("cabeçalho de saída inválido");
+            }
+            config << "header = " << curl_config_quote(name + ": " + value) << '\n';
         }
-        arguments.emplace_back("--header");
-        arguments.push_back(name + ": " + value);
+        config << "data-binary = " << curl_config_quote(body) << '\n';
+        process_input = config.str();
+        arguments.emplace_back("--config");
+        arguments.emplace_back("-");
+    } else if (!headers.empty()) {
+        throw Error("headers customizados são aceitos apenas em POST");
     }
     arguments.emplace_back("--url");
     arguments.emplace_back(url);
 
-    ProcessResult process = run_process(arguments, body, timeout_seconds, maximum_response_bytes);
+    ProcessResult process = run_process(
+        arguments, process_input, timeout_seconds, maximum_response_bytes);
     const std::size_t marker = process.output.rfind(status_marker);
     if (marker == std::string::npos) {
         const std::string detail = process.output.empty()
@@ -578,6 +610,10 @@ LanguageApiClient::LanguageApiClient(LanguageApiConfig config, NativeHttpClient 
         const char* secret = std::getenv(config_.api_key_environment.c_str());
         if (secret != nullptr) api_key_ = secret;
     }
+    if (!config_.reasoning_effort.empty() && config_.reasoning_effort != "low"
+        && config_.reasoning_effort != "medium" && config_.reasoning_effort != "high") {
+        throw Error("reasoning_effort deve ser low, medium ou high");
+    }
     if (!config_.endpoint.empty()) NativeHttpClient::validate_url(config_.endpoint);
 }
 
@@ -604,7 +640,11 @@ LanguageCompletion LanguageApiClient::complete(std::string_view system_prompt,
             << json_quote(system_prompt)
             << "},{\"role\":\"user\",\"content\":" << json_quote(user_prompt)
             << "}],\"temperature\":" << std::setprecision(3) << temperature
-            << ",\"max_tokens\":" << maximum_tokens << '}';
+            << ",\"max_tokens\":" << maximum_tokens;
+    if (!config_.reasoning_effort.empty()) {
+        request << ",\"reasoning_effort\":" << json_quote(config_.reasoning_effort);
+    }
+    request << '}';
 
     std::vector<std::pair<std::string, std::string>> headers;
     if (!api_key_.empty()) headers.emplace_back("Authorization", "Bearer " + api_key_);

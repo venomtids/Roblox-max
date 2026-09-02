@@ -53,6 +53,8 @@ struct LanguageApiConfig final {
     std::string model;
     // O segredo é lido desta variável e nunca é aceito pela interface web.
     std::string api_key_environment = "CORTEX_LLM_API_KEY";
+    // Campo OpenAI-compatible opcional; Gemini aceita low/medium/high.
+    std::string reasoning_effort;
     std::size_t timeout_seconds = 30U;
 };
 

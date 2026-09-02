@@ -140,6 +140,11 @@ struct StatePaths final {
     return value != nullptr && *value != '\0' ? std::string(value) : std::move(fallback);
 }
 
+[[nodiscard]] bool environment_present(const char* name) noexcept {
+    const char* value = std::getenv(name);
+    return value != nullptr && *value != '\0';
+}
+
 [[nodiscard]] StatePaths state_paths(const Arguments& arguments) {
     const fs::path directory = arguments.get("state", "state");
     return StatePaths{
@@ -246,7 +251,9 @@ Geração/agente:
 
 Interface web, internet e API linguística:
   --host 0.0.0.0 --port 8080 --workers 4 [--no-internet]
-  --llm-url URL --llm-model MODELO [--llm-key-env CORTEX_LLM_API_KEY]
+  --gemini  (ou apenas defina GEMINI_API_KEY no ambiente)
+  --llm-url URL --llm-model MODELO [--llm-key-env NOME]
+  --llm-reasoning low|medium|high [--llm-timeout 45]
   --enable-self-edit --source-root .   (proposta + confirmação humana obrigatória)
 
 Exemplo rápido:
@@ -445,9 +452,27 @@ void command_serve(const Arguments& arguments) {
         "llm-url", environment_value("CORTEX_LLM_URL"));
     options.language_api.model = arguments.get(
         "llm-model", environment_value("CORTEX_LLM_MODEL"));
+
+    // Com GEMINI_API_KEY presente, a rota oficial é ativada sem configuração adicional.
+    // --gemini também ignora defaults CORTEX_* antigos, salvo override explícito na CLI.
+    const bool gemini_flag = arguments.flag("gemini", false);
+    const bool gemini = gemini_flag
+                        || (options.language_api.endpoint.empty()
+                            && environment_present("GEMINI_API_KEY"));
+    if (gemini && (options.language_api.endpoint.empty()
+                   || (gemini_flag && !arguments.has("llm-url")))) {
+        options.language_api.endpoint =
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+    }
+    if (gemini && !arguments.has("llm-model")) {
+        options.language_api.model = environment_value("GEMINI_MODEL", "gemini-3.7-flash");
+    }
     options.language_api.api_key_environment = arguments.get(
-        "llm-key-env", "CORTEX_LLM_API_KEY");
-    options.language_api.timeout_seconds = arguments.size_value("llm-timeout", 30U);
+        "llm-key-env", gemini ? "GEMINI_API_KEY" : "CORTEX_LLM_API_KEY");
+    options.language_api.reasoning_effort = arguments.get(
+        "llm-reasoning", gemini ? environment_value("GEMINI_REASONING_EFFORT", "medium")
+                                 : environment_value("CORTEX_LLM_REASONING"));
+    options.language_api.timeout_seconds = arguments.size_value("llm-timeout", 45U);
     options.self_edit_enabled = arguments.flag("enable-self-edit", false);
     options.source_root = arguments.get("source-root", ".");
     cortex::run_web_chat_server(runtime.tokenizer, runtime.model, runtime.memory, options);

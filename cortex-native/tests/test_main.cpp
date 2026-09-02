@@ -7,9 +7,12 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -58,6 +61,52 @@ void test_connectivity_protocol() {
     cortex::NeuralLanguageModel million_model(million_config);
     expect(million_model.parameter_count() == 1'003'428U,
            "configuração padrão possui 1.003.428 parâmetros treináveis");
+}
+
+void set_environment(const char* name, const char* value) {
+#ifdef _WIN32
+    if (_putenv_s(name, value) != 0) throw cortex::Error("falha ao configurar ambiente de teste");
+#else
+    if (setenv(name, value, 1) != 0) throw cortex::Error("falha ao configurar ambiente de teste");
+#endif
+}
+
+void clear_environment(const char* name) {
+#ifdef _WIN32
+    static_cast<void>(_putenv_s(name, ""));
+#else
+    static_cast<void>(unsetenv(name));
+#endif
+}
+
+void test_language_api_payload(const std::string& test_executable) {
+    set_environment("CORTEX_TEST_FAKE_CURL", "1");
+    set_environment("CORTEX_TEST_API_KEY", "chave-teste");
+
+    cortex::LanguageApiConfig config;
+    config.endpoint = "http://127.0.0.1:9999/v1/chat/completions";
+    config.model = "gemini-test";
+    config.api_key_environment = "CORTEX_TEST_API_KEY";
+    config.reasoning_effort = "high";
+    cortex::LanguageApiClient client(
+        config, cortex::NativeHttpClient(test_executable));
+    const cortex::LanguageCompletion completion = client.complete(
+        "Seja direto.", "Explique C++ em uma linha.", 0.4F, 1'024U);
+
+    clear_environment("CORTEX_TEST_FAKE_CURL");
+    clear_environment("CORTEX_TEST_API_KEY");
+    expect(completion.text == "payload Gemini válido",
+           "cliente envia payload e Bearer por pipe, sem segredo exposto em argv");
+    expect(completion.model == "gemini-test", "cliente preserva identidade do modelo externo");
+
+    config.reasoning_effort = "extreme";
+    bool rejected = false;
+    try {
+        static_cast<void>(cortex::LanguageApiClient(config));
+    } catch (const cortex::Error&) {
+        rejected = true;
+    }
+    expect(rejected, "cliente rejeita reasoning_effort não suportado antes da rede");
 }
 
 void test_matrix() {
@@ -203,10 +252,45 @@ void test_long_term_memory(const fs::path& directory) {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    // O próprio binário simula curl em um subprocesso: nenhum servidor ou script externo
+    // é necessário para validar o JSON OpenAI-compatible e o header de autenticação.
+    if (std::getenv("CORTEX_TEST_FAKE_CURL") != nullptr) {
+        std::ostringstream input;
+        input << std::cin.rdbuf();
+        const std::string request = input.str();
+        bool bearer_in_arguments = false;
+        for (int index = 1; index < argc; ++index) {
+            if (std::string_view(argv[index]).find("Authorization: Bearer chave-teste")
+                != std::string_view::npos) {
+                bearer_in_arguments = true;
+            }
+        }
+        const bool bearer_in_pipe = request.find("Authorization: Bearer chave-teste")
+                                    != std::string::npos;
+        const bool explicit_payload = request.find("\\\"model\\\":\\\"gemini-test\\\"")
+                                          != std::string::npos
+                                      && request.find("\\\"reasoning_effort\\\":\\\"high\\\"")
+                                             != std::string::npos;
+        const bool autodetected_payload =
+            request.find("\\\"model\\\":\\\"gemini-3.7-flash\\\"") != std::string::npos
+            && request.find("\\\"reasoning_effort\\\":\\\"medium\\\"")
+                   != std::string::npos;
+        const bool payload_valid = request.find("\\\"max_tokens\\\":1024")
+                                       != std::string::npos
+                                   && (explicit_payload || autodetected_payload);
+        const char* content = bearer_in_pipe && !bearer_in_arguments && payload_valid
+                              ? "payload Gemini válido" : "payload inválido";
+        std::cout << "{\"choices\":[{\"message\":{\"content\":"
+                  << cortex::json_quote(content)
+                  << "}}]}\n__CORTEX_HTTP_STATUS__:200";
+        return 0;
+    }
+
     const fs::path directory = temporary_test_directory();
     try {
         test_connectivity_protocol();
+        test_language_api_payload(argc > 0 ? argv[0] : "./build/cortex-tests");
         test_matrix();
         test_tokenizer(directory);
         test_neural_training_and_checkpoint(directory);

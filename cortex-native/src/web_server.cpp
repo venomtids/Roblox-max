@@ -870,15 +870,29 @@ private:
     }
 
     [[nodiscard]] HttpResponse status_response() const {
+        const bool api_configured = language_api_.configured();
+        const bool api_requested = !language_api_.config().endpoint.empty()
+                                   && !language_api_.config().model.empty();
+        const bool gemini = api_requested
+                            && language_api_.config().endpoint.starts_with(
+                                "https://generativelanguage.googleapis.com/");
+        const std::string_view language_provider = gemini ? "gemini"
+                                                   : api_requested ? "openai-compatible"
+                                                                   : "local";
+        const std::string_view language_state = api_configured ? "ready"
+                                                : api_requested ? "missing-key"
+                                                                : "disabled";
         std::ostringstream body;
         body << "{\"ok\":true,\"vocabulary\":" << model_.config().vocabulary_size
              << ",\"hidden\":" << model_.config().hidden_size
              << ",\"layers\":" << model_.config().layer_count
              << ",\"parameters\":" << model_.parameter_count()
              << ",\"memories\":" << memory_.size()
-             << ",\"language_api\":" << (language_api_.configured() ? "true" : "false")
+             << ",\"language_api\":" << (api_configured ? "true" : "false")
+             << ",\"language_api_state\":" << json_escape(language_state)
+             << ",\"language_provider\":" << json_escape(language_provider)
              << ",\"language_model\":"
-             << json_escape(language_api_.configured() ? language_api_.config().model : "local")
+             << json_escape(api_requested ? language_api_.config().model : "local")
              << ",\"internet\":" << (options_.internet_enabled ? "true" : "false")
              << ",\"self_edit\":"
              << (self_editor_.enabled() && language_api_.configured() ? "true" : "false")
@@ -912,10 +926,12 @@ private:
             optional_json_number(object, "top_k",
                                  static_cast<double>(agent_options.generation.top_k)),
             1U, model_.config().vocabulary_size, "top_k");
+        // APIs de fronteira precisam de uma janela maior; o fallback GRU é limitado
+        // separadamente abaixo para continuar responsivo em uma máquina local.
         agent_options.generation.maximum_tokens = bounded_integer(
             optional_json_number(object, "max_tokens",
                                  static_cast<double>(agent_options.generation.maximum_tokens)),
-            1U, 512U, "max_tokens");
+            1U, 2'048U, "max_tokens");
         agent_options.memory_hits = bounded_integer(
             optional_json_number(object, "memory_hits",
                                  static_cast<double>(agent_options.memory_hits)),
@@ -934,11 +950,22 @@ private:
             message, agent_options.memory_hits, agent_options.minimum_memory_score);
         InternetResult internet_result;
         std::string warning;
+        if (request_language_api && !language_api_.configured()
+            && !language_api_.config().endpoint.empty()
+            && !language_api_.config().model.empty()) {
+            const bool gemini_requested = language_api_.config().endpoint.starts_with(
+                "https://generativelanguage.googleapis.com/");
+            warning = gemini_requested
+                      ? "Gemini sem chave; configure GEMINI_API_KEY no ambiente e reinicie. "
+                        "Usando modelo local."
+                      : "API linguística sem chave; usando modelo local.";
+        }
         if (request_internet) {
             try {
                 internet_result = internet_.search(message);
             } catch (const std::exception& exception) {
-                warning = "internet indisponível: " + std::string(exception.what());
+                if (!warning.empty()) warning += "; ";
+                warning += "internet indisponível: " + std::string(exception.what());
             }
         }
 
@@ -972,9 +999,11 @@ private:
                 }
                 enriched << "PERGUNTA ATUAL:\n" << message;
                 const std::string system =
-                    "Você é Cortex. Responda em português claro, diretamente à pergunta atual, "
-                    "sem inventar fatos. Use a conversa, memórias e informação da internet somente "
-                    "quando forem relevantes. Se não souber, diga isso de forma curta.";
+                    "Você é Cortex, um assistente preciso e útil. Responda no idioma do usuário, "
+                    "com clareza e diretamente à pergunta atual. Raciocine antes de responder, mas "
+                    "mostre somente a explicação necessária. Não invente fatos. Use conversa, "
+                    "memórias e informação da internet somente quando forem relevantes; cite a "
+                    "fonte fornecida para fatos recentes. Se não souber, admita isso brevemente.";
                 LanguageCompletion completion = language_api_.complete(
                     system, enriched.str(), agent_options.generation.temperature,
                     agent_options.generation.maximum_tokens);
@@ -1004,7 +1033,10 @@ private:
         }
 
         if (answer.empty()) {
-            AgentReply local = agent.respond(message, agent_options, conversation);
+            AgentOptions local_options = agent_options;
+            local_options.generation.maximum_tokens = std::min<std::size_t>(
+                local_options.generation.maximum_tokens, 512U);
+            AgentReply local = agent.respond(message, local_options, conversation);
             answer = std::move(local.text);
             generated_tokens = local.generated_tokens.size();
             stored_memory_id = local.stored_memory_id;

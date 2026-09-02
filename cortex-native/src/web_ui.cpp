@@ -383,7 +383,7 @@ std::string_view web_chat_html() noexcept {
         </div>
         <div class="control">
           <div class="control-line"><span>Comprimento máximo</span></div>
-          <select id="maxTokens" aria-label="Máximo de tokens"><option>64</option><option selected>96</option><option>128</option><option>192</option></select>
+          <select id="maxTokens" aria-label="Máximo de tokens"><option>64</option><option selected>96</option><option>128</option><option>192</option><option>512</option><option>1024</option><option>2048</option></select>
         </div>
         <div class="toggle-line">
           <span>API de linguagem</span>
@@ -481,12 +481,14 @@ std::string_view web_chat_html() noexcept {
     const conversationTitle = byId("conversationTitle");
     const temperature = byId("temperature");
     const temperatureValue = byId("temperatureValue");
+    const maxTokens = byId("maxTokens");
     const sidebar = byId("sidebar");
     const backdrop = byId("backdrop");
     let busy = false;
     let history = [];
     let toastTimer = 0;
     let currentProposal = 0;
+    let maxTokensTouched = false;
 
     const suggestions = [
       ["Explique a arquitetura", "Como BPE, GRU e memória trabalham juntos?"],
@@ -602,9 +604,15 @@ std::string_view web_chat_html() noexcept {
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.error || "núcleo indisponível");
         byId("statusDot").classList.add("online");
-        byId("runtimeStatus").textContent = data.language_api ? "API linguística online" : "Núcleo local online";
-        byId("runtimeDetail").textContent = `${data.parameters.toLocaleString("pt-BR")} parâmetros · ${data.memories} memórias`;
-        byId("modelLabel").textContent = data.language_api ? data.language_model : `GRU ${data.layers}×${data.hidden}`;
+        const geminiOnline = data.language_api && data.language_provider === "gemini";
+        const apiWaiting = data.language_api_state === "missing-key";
+        byId("runtimeStatus").textContent = geminiOnline ? "Gemini conectado"
+          : data.language_api ? "API linguística online"
+          : apiWaiting ? "API sem chave · fallback local" : "Núcleo local online";
+        byId("runtimeDetail").textContent = `${data.parameters.toLocaleString("pt-BR")} parâmetros locais · ${data.memories} memórias`;
+        byId("modelLabel").textContent = data.language_api ? data.language_model
+          : apiWaiting ? `${data.language_model} · sem chave` : `GRU ${data.layers}×${data.hidden}`;
+        if (data.language_api && !maxTokensTouched && maxTokens.value === "96") maxTokens.value = "1024";
         byId("languageApi").disabled = !data.language_api;
         if (!data.language_api) byId("languageApi").checked = false;
         byId("internet").disabled = !data.internet;
@@ -751,6 +759,7 @@ std::string_view web_chat_html() noexcept {
       }
     });
     temperature.addEventListener("input", () => { temperatureValue.textContent = Number(temperature.value).toFixed(1); });
+    maxTokens.addEventListener("change", () => { maxTokensTouched = true; });
     byId("newChat").addEventListener("click", clearConversation);
     byId("mobileMenu").addEventListener("click", openSidebar);
     backdrop.addEventListener("click", closeSidebar);

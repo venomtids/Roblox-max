@@ -2,7 +2,7 @@
 
 Motor de linguagem neural e agente cognitivo **100% C++20**, criado do zero e sem Python, Node.js, npm ou bibliotecas de deep learning. O núcleo compila para um único executável nativo. A interface usa HTML/CSS e JavaScript de navegador embutidos — não existe runtime ou build Node.js. A conectividade HTTPS opcional chama apenas o `curl` nativo do sistema (incluído no Windows 10/11 atual e comum em Linux); sem ele, modelo e memória continuam funcionando offline.
 
-> O código implementa um motor completo e treinável. A qualidade linguística do checkpoint depende do corpus, das dimensões e do tempo de treino. O corpus pequeno em `data/` demonstra todo o pipeline, mas não pretende ter o conhecimento de um LLM pré-treinado em bilhões de tokens.
+> O código implementa um motor completo e treinável. O GRU local de cerca de 1 milhão de parâmetros é um fallback demonstrativo e **não possui qualidade equivalente ao Gemini**. Para respostas de nível de um modelo de fronteira, o servidor integra diretamente a API Gemini e preserva o modo local quando ela estiver ausente ou falhar.
 
 ## 1. Arquitetura
 
@@ -84,7 +84,7 @@ O parser HTTP limita cabeçalhos/corpos, exige `Content-Length`, rejeita transfe
 
 ### E. API de linguagem e internet
 
-`LanguageApiClient` fala com qualquer endpoint compatível com OpenAI `POST /v1/chat/completions`: OpenAI, Groq, servidores llama.cpp locais e equivalentes. A chave vem exclusivamente de variável de ambiente. Quando a API está ativa, ela recebe conversa recente, memórias e contexto web e produz a resposta final; em timeout/erro, o agente volta automaticamente ao GRU local.
+`LanguageApiClient` fala com o endpoint OpenAI-compatible oficial do Gemini e também com qualquer `POST /v1/chat/completions` equivalente, como OpenAI, Groq ou um servidor llama.cpp local. Se `GEMINI_API_KEY` existir no ambiente, o servidor autodetecta o provedor, usa por padrão `gemini-3.7-flash` e envia `reasoning_effort=medium`. Nenhum segredo é aceito pela UI, argumento ou fonte; internamente, Bearer e corpo seguem por um pipe `curl --config -`, sem aparecer no argv nem em arquivo temporário. Quando a API está ativa, ela recebe conversa recente, memórias e contexto web e produz a resposta final; em timeout/erro, o agente volta automaticamente ao GRU local.
 
 `InternetSearch` consulta por HTTPS a API Instant Answer do DuckDuckGo quando o usuário ativa **Pesquisar na internet**. Um resultado objetivo pode responder diretamente ou enriquecer a API linguística. A URL é fixa, respostas têm limite e HTTP remoto sem TLS é rejeitado. Isso não é um navegador irrestrito e reduz a superfície de SSRF.
 
@@ -133,7 +133,7 @@ cortex-native/
 │   ├── web_server.cpp                sockets, HTTP, JSON e API de chat
 │   └── web_ui.cpp                    interface responsiva embutida
 └── tests/
-    └── test_main.cpp                 38 verificações determinísticas
+    └── test_main.cpp                 verificações determinísticas e API mock
 ```
 
 Os arquivos principais possuem comentários junto a cada bloco algorítmico e às linhas onde as equações são aplicadas. Operações triviais não são escondidas por macros ou frameworks; o fluxo matemático pode ser acompanhado diretamente no fonte.
@@ -205,23 +205,40 @@ Abra [http://localhost:8080](http://localhost:8080). A página permite conversar
 
 Não execute esse comando diretamente na internet sem colocar autenticação, TLS, rate limiting e um proxy reverso à frente. O servidor embutido foi projetado para uso local, rede confiável e integração em desenvolvimento.
 
-### Ativar respostas por API de linguagem
+### Ativar qualidade Gemini
 
-A chave não entra em argumento, navegador, arquivo ou Git. Defina-a no ambiente e informe um endpoint OpenAI-compatible:
+Crie uma chave no [Google AI Studio](https://aistudio.google.com/apikey) e configure-a **somente no ambiente do processo**. Não cole a chave no chat, não a coloque na linha de comando e não a grave no repositório. Endpoint e modelo seguem a [compatibilidade OpenAI oficial do Gemini](https://ai.google.dev/gemini-api/docs/openai) e são autodetectados:
 
 ```bash
-export CORTEX_LLM_API_KEY="SUA_CHAVE_NO_SEU_TERMINAL"
-./build/cortex serve --state state --host 0.0.0.0 --port 8080 \
-  --llm-url https://api.openai.com/v1/chat/completions \
-  --llm-model SEU_MODELO
+export GEMINI_API_KEY="SUA_CHAVE_NO_SEU_TERMINAL"
+./build/cortex serve --state state --host 0.0.0.0 --port 8080
 ```
 
 PowerShell:
 
 ```powershell
-$env:CORTEX_LLM_API_KEY = "SUA_CHAVE_NO_SEU_TERMINAL"
-.\build\cortex.exe serve --state state `
-  --llm-url https://api.openai.com/v1/chat/completions `
+$env:GEMINI_API_KEY = "SUA_CHAVE_NO_SEU_TERMINAL"
+.\build\cortex.exe serve --state state --host 0.0.0.0 --port 8080
+```
+
+O atalho explícito `--gemini` tem o mesmo resultado e é útil para diagnosticar uma chave ausente. Os defaults são:
+
+```text
+endpoint: https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+modelo:   gemini-3.7-flash
+esforço:  medium
+```
+
+É possível trocar apenas o modelo com `GEMINI_MODEL`, o esforço com `GEMINI_REASONING_EFFORT=low|medium|high`, ou pela CLI com `--llm-model` e `--llm-reasoning`. A interface identifica **Gemini conectado** e aumenta o limite de resposta para 1024 tokens; se a chave não existir, estiver inválida ou a rede falhar, o GRU local continua atendendo e um aviso aparece no chat.
+
+### Usar outra API OpenAI-compatible
+
+Para outro provedor, mantenha a chave exclusivamente em uma variável de ambiente e informe apenas **o nome dessa variável** ao Cortex quando necessário:
+
+```bash
+export CORTEX_LLM_API_KEY="SUA_CHAVE_NO_SEU_TERMINAL"
+./build/cortex serve --state state \
+  --llm-url https://api.openai.com/v1/chat/completions \
   --llm-model SEU_MODELO
 ```
 
