@@ -157,6 +157,7 @@ cortex-native/
 ├── Makefile                            build Linux/macOS/MinGW
 ├── README.md                           arquitetura e uso completo
 ├── WINDOWS.md                          instalação e operação Windows
+├── Cortex-One-Click-Windows.cmd        instala, compila e abre automaticamente
 ├── build-windows.cmd                   compila, testa e gera cortex.exe
 ├── start-windows.cmd                   primeiro uso + Qwen3 1.7B
 ├── start-windows-system.cmd            UAC + automodificação de sistema
@@ -196,7 +197,9 @@ Os arquivos principais possuem comentários junto a cada bloco algorítmico e à
 
 ## 3. Compilar e testar
 
-Pré-requisitos: compilador C++20 com suporte a threads e `make`. Não há etapa de geração de código nem download de pacotes.
+No Windows, a opção mais simples é dar dois cliques em `Cortex-One-Click-Windows.cmd`; ele instala os pré-requisitos nativos com `winget`, compila, testa e abre a interface. O caminho manual está em [WINDOWS.md](WINDOWS.md).
+
+Em Linux/macOS, os pré-requisitos são compilador C++20 com threads e `make`:
 
 ```bash
 cd cortex-native

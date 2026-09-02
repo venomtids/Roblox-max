@@ -2,7 +2,19 @@
 
 A Cortex continua sendo C++20 nativo. Estes passos não instalam nem executam Python, Node.js, npm, .NET ou WebView.
 
-## Caminho rápido
+## Caminho mais fácil: um clique
+
+Extraia o projeto, abra `cortex-native` e dê dois cliques em:
+
+```text
+Cortex-One-Click-Windows.cmd
+```
+
+Esse arquivo usa somente ferramentas nativas do Windows para instalar MSYS2/MinGW-w64 e llama.cpp pelo `winget`, compila, executa as 104 verificações e inicia o Qwen3 1.7B. No final, o próprio `cortex.exe` pede UAC para o modo irrestrito supervisionado. O primeiro download do modelo tem aproximadamente 1,83 GB.
+
+Se o instalador informar que o `llama-server.exe` ainda não entrou no `PATH`, feche a janela e execute o mesmo arquivo novamente.
+
+## Caminho manual
 
 ### 1. Compilador
 
