@@ -1,34 +1,28 @@
 # Cortex Native AI
 
-Motor de linguagem neural e agente cognitivo **100% C++20**, criado do zero e sem Python, Node.js, npm ou bibliotecas de deep learning. O núcleo compila para um único executável nativo. A interface usa HTML/CSS e JavaScript de navegador embutidos — não existe runtime ou build Node.js. A conectividade HTTPS opcional chama apenas o `curl` nativo do sistema (incluído no Windows 10/11 atual e comum em Linux); sem ele, modelo e memória continuam funcionando offline.
+Agente cognitivo e servidor **100% C++20**, sem Python, Node.js, npm, Docker ou bibliotecas fechadas. O núcleo próprio implementa BPE, GRU/BPTT/Adam, memória e HTTP; para uso diário offline, ele agora inicia automaticamente o runtime aberto [llama.cpp](https://github.com/ggml-org/llama.cpp) e pesos GGUF do [Qwen3](https://huggingface.co/collections/Qwen/qwen3). A interface usa somente JavaScript de navegador embutido, sem runtime ou build Node.
 
-> O código implementa um motor completo e treinável. O GRU local de cerca de 1 milhão de parâmetros é um fallback demonstrativo e **não possui qualidade equivalente ao Gemini**. Para respostas de nível de um modelo de fronteira, o servidor integra diretamente a API Gemini e preserva o modo local quando ela estiver ausente ou falhar.
+> Não é tecnicamente possível transformar por ajuste rápido um GRU de 1 milhão de parâmetros em um Gemini: faltariam os pesos, trilhões de tokens e o cluster de treinamento. A solução local real implementada é trocar o gerador ativo por um modelo aberto pré-treinado de **0,6B, 1,7B, 4B, 14,8B ou 30,5B parâmetros**, mantendo memória, internet e o GRU de 1.003.428 parâmetros como fallback. Quanto maior o perfil e o hardware, mais próxima fica a qualidade de uso diário; não se afirma equivalência falsa ao Gemini.
 
 ## 1. Arquitetura
 
 ```text
-texto UTF-8
+pergunta UTF-8
     │
-    ▼
-┌──────────────────────────────┐
-│ Ingestão / BPE byte-level    │  aprende merges, encode/decode reversível
-└──────────────┬───────────────┘
-               │ TokenId[]
-               ▼
-┌──────────────────────────────┐
-│ Núcleo neural GRU empilhado  │  forward, softmax, BPTT, clipping, Adam
-│ + amostrador autoregressivo  │  top-k, temperatura, repetição, seed
-└───────┬──────────────────────┘
-        │ estado oculto normalizado
-        ▼
-┌──────────────────────────────┐
-│ Memória vetorial persistente │  cosseno paralelo, ids, remoção, arquivo atômico
-└───────┬──────────────────────┘
-        │ episódios recuperados
-        ▼
-┌──────────────────────────────┐
-│ Agente cognitivo             │  recuperar → contextualizar → inferir → consolidar
-└──────────────────────────────┘
+    ├──► BPE + GRU próprio ──► embedding ──► memória vetorial persistente
+    │                                              │
+    ├──► DuckDuckGo opcional ──► resumo + fonte ───┤
+    │                                              ▼
+    └──────────────────────────────► contexto enriquecido
+                                                   │
+                     ┌─────────────────────────────┼──────────────────────┐
+                     ▼                             ▼                      ▼
+             Qwen3 GGUF local              API opcional          GRU 1M fallback
+             llama.cpp C++                 Gemini/outras          sempre offline
+                     │                             │                      │
+                     └─────────────────────────────┴──────────────────────┘
+                                                   ▼
+                                    resposta + consolidação na memória
 ```
 
 ### A. Ingestão e tokenização
@@ -66,7 +60,13 @@ O `CognitiveAgent` executa um ciclo RAG local:
 
 Essa finalização é importante em modelos autoregressivos: sem ela, o modelo pode responder corretamente e continuar prevendo o próximo diálogo do corpus, parecendo pouco direto.
 
-### D. Interface de conversa no navegador
+### D. Inferência aberta local para uso diário
+
+`LocalModelServer` inicia `llama-server` diretamente com `fork/exec` no Linux/macOS ou `CreateProcess` no Windows, sempre sem shell. Ele restringe a API a `127.0.0.1`, espera `/health` e `/v1/models`, supervisiona o processo e o encerra junto com Cortex. O primeiro uso de `-hf` baixa o GGUF para o cache do usuário; depois disso, a inferência funciona offline.
+
+O comando `--local` mede a RAM e escolhe um perfil conservador. Os pesos não são somados ao GRU: o Qwen passa a ser o **gerador ativo**, enquanto o núcleo próprio continua fornecendo memória, RAG, internet, segurança e fallback. Isso eleva a capacidade real de 1 milhão para bilhões de parâmetros sem tentar retreinar bilhões de pesos no computador do usuário.
+
+### E. Interface de conversa no navegador
 
 O comando `serve` inicia um servidor HTTP/1.1 escrito com sockets nativos em C++, ligado por padrão a `0.0.0.0:8080`. Ele entrega uma interface responsiva de chat, mantém as últimas mensagens no contexto curto e usa a memória vetorial para lembranças de longo prazo. HTML, CSS e JavaScript de navegador estão incorporados em `web_ui.cpp`; não há CDN, npm, Node.js ou arquivos web para instalar.
 
@@ -82,13 +82,13 @@ Endpoints locais:
 
 O parser HTTP limita cabeçalhos/corpos, exige `Content-Length`, rejeita transfer encoding e valida o JSON sem biblioteca externa. Um pool separado atende conexões para não bloquear o pool matemático. A resposta inclui CSP, `nosniff`, conteúdo UTF-8 sanitizado e nunca habilita CORS para origens externas.
 
-### E. API de linguagem e internet
+### F. API de linguagem e internet
 
-`LanguageApiClient` fala com o endpoint OpenAI-compatible oficial do Gemini e também com qualquer `POST /v1/chat/completions` equivalente, como OpenAI, Groq ou um servidor llama.cpp local. Se `GEMINI_API_KEY` existir no ambiente, o servidor autodetecta o provedor, usa por padrão `gemini-3.7-flash` e envia `reasoning_effort=medium`. Nenhum segredo é aceito pela UI, argumento ou fonte; internamente, Bearer e corpo seguem por um pipe `curl --config -`, sem aparecer no argv nem em arquivo temporário. Quando a API está ativa, ela recebe conversa recente, memórias e contexto web e produz a resposta final; em timeout/erro, o agente volta automaticamente ao GRU local.
+`LanguageApiClient` usa o mesmo protocolo OpenAI-compatible para o Qwen local, Gemini e outros provedores. O modelo GGUF em loopback não precisa de chave. APIs remotas continuam opcionais; nenhum segredo é aceito pela UI, argumento ou fonte e Bearer/corpo seguem por pipe `curl --config -`, sem aparecer no argv ou em arquivo temporário. Em qualquer falha, o sistema aciona o resultado web já obtido ou o GRU próprio como fallback seguro.
 
 `InternetSearch` consulta por HTTPS a API Instant Answer do DuckDuckGo quando o usuário ativa **Pesquisar na internet**. Um resultado objetivo pode responder diretamente ou enriquecer a API linguística. A URL é fixa, respostas têm limite e HTTP remoto sem TLS é rejeitado. Isso não é um navegador irrestrito e reduz a superfície de SSRF.
 
-### F. Autoevolução controlada
+### G. Autoevolução controlada
 
 O sistema pode propor e aplicar mudanças ao próprio fonte, mas **não recebe permissão irrestrita**. Com `--enable-self-edit`, a interface libera um laboratório em duas etapas:
 
@@ -116,6 +116,7 @@ cortex-native/
 │   ├── agent.hpp                     contrato do ciclo cognitivo
 │   ├── connectivity.hpp              HTTPS, API linguística e busca web
 │   ├── core.hpp                      matriz, parâmetros, pool, PRNG e I/O
+│   ├── local_model.hpp               perfis GGUF e supervisor llama.cpp
 │   ├── memory.hpp                    contrato do vector store persistente
 │   ├── neural_model.hpp              GRU, treino, inferência e geração
 │   ├── self_editor.hpp               autoedição com revisão humana
@@ -125,6 +126,7 @@ cortex-native/
 │   ├── agent.cpp                     recuperação + contexto + consolidação
 │   ├── connectivity.cpp              curl nativo e protocolos externos
 │   ├── core.cpp                      álgebra e infraestrutura nativa
+│   ├── local_model.cpp               launcher/supervisor nativo do llama-server
 │   ├── main.cpp                      CLI e validação de argumentos
 │   ├── memory.cpp                    cosseno paralelo e serialização
 │   ├── neural_model.cpp              forward, BPTT, Adam e sampling
@@ -153,8 +155,8 @@ Compilação direta, caso `make` não esteja disponível:
 ```bash
 g++ -Iinclude -std=c++20 -O3 -DNDEBUG -march=native -flto -pthread \
   src/core.cpp src/tokenizer.cpp src/neural_model.cpp src/memory.cpp \
-  src/agent.cpp src/connectivity.cpp src/self_editor.cpp src/web_server.cpp \
-  src/web_ui.cpp src/main.cpp -o cortex
+  src/agent.cpp src/connectivity.cpp src/local_model.cpp src/self_editor.cpp \
+  src/web_server.cpp src/web_ui.cpp src/main.cpp -o cortex
 ```
 
 No MinGW/Windows, acrescente `-lws2_32`; o `Makefile` detecta o Windows e faz isso automaticamente.
@@ -181,7 +183,7 @@ make debug
   --learning-rate 0.0025
 ```
 
-Com o corpus incluído, essa configuração cria **1.003.428 parâmetros treináveis**. As 25 épocas padrão são deliberadas: com poucas épocas o pipeline funciona, mas ainda produz fragmentos. Um milhão de parâmetros melhora a capacidade local, porém continua muito abaixo de um LLM comercial; a API linguística abaixo é a opção para respostas gerais de alta qualidade.
+Com o corpus incluído, essa configuração cria **1.003.428 parâmetros treináveis**. As 25 épocas padrão são deliberadas: com poucas épocas o pipeline funciona, mas ainda produz fragmentos. Esse checkpoint continua útil para embeddings, estudo e fallback; para conversas diárias, use `--local`, que ativa bilhões de parâmetros abertos já pré-treinados.
 
 Arquivos produzidos:
 
@@ -205,7 +207,67 @@ Abra [http://localhost:8080](http://localhost:8080). A página permite conversar
 
 Não execute esse comando diretamente na internet sem colocar autenticação, TLS, rate limiting e um proxy reverso à frente. O servidor embutido foi projetado para uso local, rede confiável e integração em desenvolvimento.
 
-### Ativar qualidade Gemini
+### Ativar o modelo aberto local — caminho recomendado
+
+Instale o executável C++ do [llama.cpp](https://github.com/ggml-org/llama.cpp/blob/master/docs/install.md). No Windows 10/11:
+
+```powershell
+winget install --exact --id ggml.llamacpp
+```
+
+Em Linux/macOS, use um pacote nativo ou compile diretamente:
+
+```bash
+git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
+cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release
+cmake --build llama.cpp/build --config Release -j --target llama-server
+export CORTEX_LLAMA_SERVER="$PWD/llama.cpp/build/bin/llama-server"
+```
+
+Veja a recomendação para a máquina e depois inicie. A opção `--local` seleciona o maior perfil seguro para a RAM detectada, baixa os pesos oficiais na primeira execução e inicia tudo:
+
+```bash
+./build/cortex models
+./build/cortex serve --state state --host 0.0.0.0 --port 8080 --local
+```
+
+| Perfil automático | RAM recomendada | Modelo ativo | Quantização/tamanho aproximado |
+|---|---:|---|---:|
+| `tiny` | 2–3 GiB | Qwen3 0.6B | Q8, 639 MB |
+| `edge` | 4–7 GiB | Qwen3 1.7B | Q8, 1,83 GB |
+| `daily` | 8–23 GiB | Qwen3 4B | Q4_K_M, 2,5 GB |
+| `workstation` | 24–31 GiB | Qwen3 14.8B | Q4_K_M, 9 GB |
+| `max` | 32+ GiB | Qwen3 30.5B-A3B MoE | Q4_K_M, 18,6 GB |
+
+Escolha manualmente quando desejar priorizar velocidade ou qualidade:
+
+```bash
+./build/cortex serve --state state --local-profile daily
+./build/cortex serve --state state --local-profile workstation
+```
+
+Também é possível usar qualquer GGUF compatível:
+
+```bash
+./build/cortex serve --state state \
+  --local-model models/meu-modelo.gguf \
+  --local-name "Meu modelo aberto"
+```
+
+Ou outra referência do Hugging Face sem Python:
+
+```bash
+./build/cortex serve --state state \
+  --local-hf Qwen/Qwen3-4B-GGUF:Q4_K_M
+```
+
+Opções de desempenho: `--local-context`, `--local-threads`, `--local-gpu-layers`, `--local-port` e `--llama-server`. O padrão tenta descarregar todas as camadas possíveis na GPU e continua em CPU quando o backend não possui GPU. O servidor interno fica somente em loopback e a interface exibe o nome, a contagem real de parâmetros e a janela de contexto do perfil ativo.
+
+O chat usa o modo `/no_think` do Qwen3 por padrão para respostas diárias rápidas e sem consumir a saída com raciocínio oculto. Inclua `/think` na pergunta quando quiser priorizar raciocínio aprofundado em matemática ou código.
+
+Para máquinas comuns, 4B–14B já tornam o chat muito mais útil que o GRU demonstrativo. Modelos abertos com centenas de bilhões de parâmetros existem, mas exigem dezenas ou centenas de GiB de RAM/VRAM; combinar checkpoints menores não cria gratuitamente conhecimento equivalente a um modelo de fronteira.
+
+### Ativar qualidade Gemini opcionalmente
 
 Crie uma chave no [Google AI Studio](https://aistudio.google.com/apikey) e configure-a **somente no ambiente do processo**. Não cole a chave no chat, não a coloque na linha de comando e não a grave no repositório. Endpoint e modelo seguem a [compatibilidade OpenAI oficial do Gemini](https://ai.google.dev/gemini-api/docs/openai) e são autodetectados:
 
@@ -324,10 +386,11 @@ O carregamento verifica magic/version, dimensões máximas, formas e nomes dos p
 - redução real de loss por BPTT/Adam;
 - checkpoint bit a bit e amostragem determinística;
 - ranking, persistência e remoção da memória vetorial;
-- configuração neural próxima de um milhão de parâmetros;
+- configuração neural própria próxima de um milhão de parâmetros;
+- perfis Qwen de 0,6B a 30,5B, seleção por RAM e argumentos seguros do launcher;
 - percent-encoding, JSON Unicode e bloqueio de HTTP remoto sem TLS;
-- presença dos controles de API, internet e autoedição na interface;
-- smoke tests HTTP para página, status, fallback local e API linguística mock;
+- presença dos controles de modelo local, API, internet e autoedição na interface;
+- payload OpenAI-compatible e amostragem do modelo validados com processo mock nativo;
 - fluxo de proposta, confirmação, backup e aplicação em uma árvore temporária.
 
 ## 8. Escala e evolução

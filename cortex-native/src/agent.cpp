@@ -68,6 +68,21 @@ CognitiveAgent::CognitiveAgent(const BpeTokenizer& tokenizer,
 
 std::vector<float> CognitiveAgent::embed_text(std::string_view text) const {
     std::vector<TokenId> tokens = tokenizer_.encode(text, true, false);
+    // Embeddings episódicos não precisam percorrer documentos inteiros. Limitar o
+    // GRU auxiliar preserva começo/fim e impede que RAG bloqueie um LLM grande.
+    constexpr std::size_t maximum_embedding_tokens = 256U;
+    if (tokens.size() > maximum_embedding_tokens) {
+        constexpr std::size_t head_tokens = maximum_embedding_tokens / 2U;
+        std::vector<TokenId> bounded;
+        bounded.reserve(maximum_embedding_tokens);
+        bounded.insert(bounded.end(), tokens.begin(),
+                       tokens.begin() + static_cast<std::ptrdiff_t>(head_tokens));
+        bounded.insert(bounded.end(),
+                       tokens.end() - static_cast<std::ptrdiff_t>(maximum_embedding_tokens
+                                                                  - head_tokens),
+                       tokens.end());
+        tokens = std::move(bounded);
+    }
     return model_.sentence_embedding(tokens);
 }
 

@@ -8,7 +8,7 @@ DEBUG_FLAGS := -O0 -g3 -fsanitize=address,undefined -fno-omit-frame-pointer
 
 BUILD_DIR := build
 SRC := src/core.cpp src/tokenizer.cpp src/neural_model.cpp src/memory.cpp src/agent.cpp \
-       src/connectivity.cpp src/self_editor.cpp src/web_server.cpp src/web_ui.cpp
+       src/connectivity.cpp src/local_model.cpp src/self_editor.cpp src/web_server.cpp src/web_ui.cpp
 HEADERS := $(wildcard include/cortex/*.hpp)
 CLI_SRC := $(SRC) src/main.cpp
 TEST_SRC := $(SRC) tests/test_main.cpp

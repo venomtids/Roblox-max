@@ -4,7 +4,7 @@ Aplicativos nativos para Windows 10/11. **Não usam nem instalam Python, Node.js
 
 ## Projeto separado: Cortex Native AI
 
-O motor neural C++20, agora com cerca de 1 milhão de parâmetros, tokenizador BPE, GRU/BPTT/Adam implementados do zero, memória persistente, acesso opcional à internet, integração Gemini autodetectável (e outras APIs OpenAI-compatible), autoedição controlada e interface web de conversa, está isolado em [`cortex-native/`](cortex-native/README.md). Ele não depende dos launchers Roblox nem de Python/Node.js.
+O agente C++20 agora combina o núcleo próprio de 1 milhão de parâmetros com modelos abertos locais Qwen3 de 0,6B a 30,5B via llama.cpp, seleção automática por RAM, memória persistente, internet opcional, APIs OpenAI-compatible, autoedição controlada e interface web. Tudo está isolado em [`cortex-native/`](cortex-native/README.md), sem depender dos launchers Roblox, Python ou Node.js.
 
 ## Bootstrapper Advanced — recomendado
 

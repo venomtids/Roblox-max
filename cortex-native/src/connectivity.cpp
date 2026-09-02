@@ -614,6 +614,11 @@ LanguageApiClient::LanguageApiClient(LanguageApiConfig config, NativeHttpClient 
         && config_.reasoning_effort != "medium" && config_.reasoning_effort != "high") {
         throw Error("reasoning_effort deve ser low, medium ou high");
     }
+    if (config_.extended_sampling
+        && (!(config_.top_p > 0.0F && config_.top_p <= 1.0F)
+            || !(config_.presence_penalty >= 0.0F && config_.presence_penalty <= 2.0F))) {
+        throw Error("amostragem estendida fora dos limites permitidos");
+    }
     if (!config_.endpoint.empty()) NativeHttpClient::validate_url(config_.endpoint);
 }
 
@@ -625,12 +630,13 @@ bool LanguageApiClient::configured() const noexcept {
 LanguageCompletion LanguageApiClient::complete(std::string_view system_prompt,
                                                 std::string_view user_prompt,
                                                 float temperature,
-                                                std::size_t maximum_tokens) const {
+                                                std::size_t maximum_tokens,
+                                                std::size_t top_k) const {
     if (!configured()) {
         throw Error("API de linguagem não configurada; defina endpoint, modelo e chave");
     }
     if (!(temperature >= 0.0F && temperature <= 2.0F) || maximum_tokens == 0U
-        || maximum_tokens > 8'192U) {
+        || maximum_tokens > 8'192U || top_k == 0U || top_k > 100'000U) {
         throw Error("parâmetros inválidos para API de linguagem");
     }
 
@@ -643,6 +649,11 @@ LanguageCompletion LanguageApiClient::complete(std::string_view system_prompt,
             << ",\"max_tokens\":" << maximum_tokens;
     if (!config_.reasoning_effort.empty()) {
         request << ",\"reasoning_effort\":" << json_quote(config_.reasoning_effort);
+    }
+    if (config_.extended_sampling) {
+        request << ",\"top_k\":" << top_k
+                << ",\"top_p\":" << config_.top_p
+                << ",\"presence_penalty\":" << config_.presence_penalty;
     }
     request << '}';
 
@@ -662,7 +673,10 @@ LanguageCompletion LanguageApiClient::complete(std::string_view system_prompt,
     if (!content || content->empty()) {
         throw Error("API de linguagem respondeu sem campo content");
     }
-    return LanguageCompletion{std::move(*content), config_.model};
+    return LanguageCompletion{
+        std::move(*content),
+        config_.display_model.empty() ? config_.model : config_.display_model
+    };
 }
 
 InternetSearch::InternetSearch(NativeHttpClient http) : http_(std::move(http)) {}

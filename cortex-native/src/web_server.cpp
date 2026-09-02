@@ -873,15 +873,14 @@ private:
         const bool api_configured = language_api_.configured();
         const bool api_requested = !language_api_.config().endpoint.empty()
                                    && !language_api_.config().model.empty();
-        const bool gemini = api_requested
-                            && language_api_.config().endpoint.starts_with(
-                                "https://generativelanguage.googleapis.com/");
-        const std::string_view language_provider = gemini ? "gemini"
-                                                   : api_requested ? "openai-compatible"
-                                                                   : "local";
+        const std::string_view language_provider = api_requested
+            ? std::string_view(language_api_.config().provider) : std::string_view("local-gru");
         const std::string_view language_state = api_configured ? "ready"
                                                 : api_requested ? "missing-key"
                                                                 : "disabled";
+        const std::string_view display_model = !language_api_.config().display_model.empty()
+            ? std::string_view(language_api_.config().display_model)
+            : std::string_view(language_api_.config().model);
         std::ostringstream body;
         body << "{\"ok\":true,\"vocabulary\":" << model_.config().vocabulary_size
              << ",\"hidden\":" << model_.config().hidden_size
@@ -892,7 +891,9 @@ private:
              << ",\"language_api_state\":" << json_escape(language_state)
              << ",\"language_provider\":" << json_escape(language_provider)
              << ",\"language_model\":"
-             << json_escape(api_requested ? language_api_.config().model : "local")
+             << json_escape(api_requested ? display_model : std::string_view("local"))
+             << ",\"language_parameters\":" << language_api_.config().parameter_count
+             << ",\"language_context\":" << language_api_.config().context_tokens
              << ",\"internet\":" << (options_.internet_enabled ? "true" : "false")
              << ",\"self_edit\":"
              << (self_editor_.enabled() && language_api_.configured() ? "true" : "false")
@@ -931,7 +932,7 @@ private:
         agent_options.generation.maximum_tokens = bounded_integer(
             optional_json_number(object, "max_tokens",
                                  static_cast<double>(agent_options.generation.maximum_tokens)),
-            1U, 2'048U, "max_tokens");
+            1U, 4'096U, "max_tokens");
         agent_options.memory_hits = bounded_integer(
             optional_json_number(object, "memory_hits",
                                  static_cast<double>(agent_options.memory_hits)),
@@ -953,8 +954,7 @@ private:
         if (request_language_api && !language_api_.configured()
             && !language_api_.config().endpoint.empty()
             && !language_api_.config().model.empty()) {
-            const bool gemini_requested = language_api_.config().endpoint.starts_with(
-                "https://generativelanguage.googleapis.com/");
+            const bool gemini_requested = language_api_.config().provider == "gemini";
             warning = gemini_requested
                       ? "Gemini sem chave; configure GEMINI_API_KEY no ambiente e reinicie. "
                         "Usando modelo local."
@@ -997,16 +997,60 @@ private:
                     }
                     enriched << "\n\n";
                 }
-                enriched << "PERGUNTA ATUAL:\n" << message;
-                const std::string system =
+                const std::string current_question = "PERGUNTA ATUAL:\n" + message;
+                enriched << current_question;
+                std::string system =
                     "Você é Cortex, um assistente preciso e útil. Responda no idioma do usuário, "
                     "com clareza e diretamente à pergunta atual. Raciocine antes de responder, mas "
                     "mostre somente a explicação necessária. Não invente fatos. Use conversa, "
                     "memórias e informação da internet somente quando forem relevantes; cite a "
                     "fonte fornecida para fatos recentes. Se não souber, admita isso brevemente.";
+                if (language_api_.config().provider == "local-open-model") {
+                    // Qwen3 economiza a janela no diálogo diário; /think do usuário ainda prevalece.
+                    system += "\n/no_think";
+                }
+
+                std::string api_prompt = enriched.str();
+                std::size_t api_maximum_tokens = agent_options.generation.maximum_tokens;
+                const std::size_t context_tokens = language_api_.config().context_tokens;
+                if (context_tokens != 0U) {
+                    // Reserva metade da janela para saída e uma margem para system/chat template.
+                    api_maximum_tokens = std::min(
+                        api_maximum_tokens, std::max<std::size_t>(1U, context_tokens / 2U));
+                    constexpr std::size_t template_reserve = 256U;
+                    const std::size_t input_tokens = context_tokens
+                        > api_maximum_tokens + template_reserve
+                        ? context_tokens - api_maximum_tokens - template_reserve
+                        : std::max<std::size_t>(128U, context_tokens / 4U);
+                    const std::size_t byte_budget = std::max<std::size_t>(1'024U, input_tokens * 3U);
+                    if (api_prompt.size() > byte_budget) {
+                        constexpr std::string_view notice = "[Contexto truncado]\n";
+                        if (current_question.size() + notice.size() <= byte_budget) {
+                            // Descarta primeiro o contexto antigo e preserva a pergunta inteira.
+                            const std::size_t context_tail = byte_budget - notice.size()
+                                                             - current_question.size();
+                            const std::size_t context_size = api_prompt.size()
+                                                             - current_question.size();
+                            api_prompt = std::string(notice)
+                                         + sanitize_utf8(std::string_view(api_prompt).substr(
+                                               context_size - std::min(context_size, context_tail),
+                                               std::min(context_size, context_tail)))
+                                         + current_question;
+                        } else {
+                            // Uma pergunta enorme conserva começo e fim em vez de falhar por contexto.
+                            const std::size_t available = byte_budget - notice.size();
+                            const std::size_t first = available / 2U;
+                            const std::size_t last = available - first;
+                            api_prompt = sanitize_utf8(std::string_view(current_question).substr(0U, first))
+                                         + std::string(notice)
+                                         + sanitize_utf8(std::string_view(current_question).substr(
+                                               current_question.size() - last));
+                        }
+                    }
+                }
                 LanguageCompletion completion = language_api_.complete(
-                    system, enriched.str(), agent_options.generation.temperature,
-                    agent_options.generation.maximum_tokens);
+                    system, api_prompt, agent_options.generation.temperature,
+                    api_maximum_tokens, agent_options.generation.top_k);
                 answer = sanitize_utf8(completion.text);
                 const auto response_whitespace = [](char character) {
                     return character == ' ' || character == '\t' || character == '\r'
@@ -1015,11 +1059,14 @@ private:
                 while (!answer.empty() && response_whitespace(answer.front())) answer.erase(0U, 1U);
                 while (!answer.empty() && response_whitespace(answer.back())) answer.pop_back();
                 if (answer.empty()) throw Error("API de linguagem devolveu texto vazio");
-                provider = "language-api";
+                provider = language_api_.config().provider == "local-open-model"
+                           ? "local-open-model" : "language-api";
                 provider_model = completion.model;
             } catch (const std::exception& exception) {
                 if (!warning.empty()) warning += "; ";
-                warning += "API de linguagem falhou, usando modelo local: ";
+                warning += language_api_.config().provider == "local-open-model"
+                           ? "modelo GGUF falhou; acionando fallback seguro: "
+                           : "API de linguagem falhou; acionando fallback local: ";
                 warning += exception.what();
             }
         }
@@ -1239,8 +1286,11 @@ void run_web_chat_server(const BpeTokenizer& tokenizer,
     std::cout << "Interface Cortex disponível em http://" << options.bind_address
               << ':' << options.port << "\n"
               << "Workers HTTP: " << options.worker_count
-              << " | API linguística: "
-              << (runtime.language_api_configured() ? "ativa" : "fallback local")
+              << " | modelo ativo: "
+              << (runtime.language_api_configured()
+                      ? (options.language_api.display_model.empty()
+                             ? options.language_api.model : options.language_api.display_model)
+                      : "GRU local (fallback)")
               << " | internet: " << (options.internet_enabled ? "habilitada" : "desabilitada")
               << " | Ctrl+C para encerrar\n" << std::flush;
 

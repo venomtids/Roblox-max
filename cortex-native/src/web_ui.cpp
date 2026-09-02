@@ -379,14 +379,14 @@ std::string_view web_chat_html() noexcept {
         </div>
         <div class="control">
           <div class="control-line"><span>Top-k</span></div>
-          <select id="topK" aria-label="Top-k"><option selected>4</option><option>8</option><option>24</option><option>48</option></select>
+          <select id="topK" aria-label="Top-k"><option selected>4</option><option>8</option><option>20</option><option>24</option><option>48</option></select>
         </div>
         <div class="control">
           <div class="control-line"><span>Comprimento máximo</span></div>
-          <select id="maxTokens" aria-label="Máximo de tokens"><option>64</option><option selected>96</option><option>128</option><option>192</option><option>512</option><option>1024</option><option>2048</option></select>
+          <select id="maxTokens" aria-label="Máximo de tokens"><option>64</option><option selected>96</option><option>128</option><option>192</option><option>512</option><option>1024</option><option>2048</option><option>4096</option></select>
         </div>
         <div class="toggle-line">
-          <span>API de linguagem</span>
+          <span>Modelo aberto / API</span>
           <label class="switch"><input id="languageApi" type="checkbox" checked><span></span></label>
         </div>
         <div class="toggle-line">
@@ -437,7 +437,7 @@ std::string_view web_chat_html() noexcept {
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 14-7-4 14-3-6-7-1Z"/><path d="m12 13 7-8"/></svg>
             </button>
           </form>
-          <div class="composer-note">Enter envia · Shift+Enter quebra linha · respostas dependem do treinamento local</div>
+          <div class="composer-note">Enter envia · Shift+Enter quebra linha · qualidade depende do modelo ativo</div>
         </div>
       </div>
     </main>
@@ -482,6 +482,7 @@ std::string_view web_chat_html() noexcept {
     const temperature = byId("temperature");
     const temperatureValue = byId("temperatureValue");
     const maxTokens = byId("maxTokens");
+    const topK = byId("topK");
     const sidebar = byId("sidebar");
     const backdrop = byId("backdrop");
     let busy = false;
@@ -489,6 +490,8 @@ std::string_view web_chat_html() noexcept {
     let toastTimer = 0;
     let currentProposal = 0;
     let maxTokensTouched = false;
+    let topKTouched = false;
+    let temperatureTouched = false;
 
     const suggestions = [
       ["Explique a arquitetura", "Como BPE, GRU e memória trabalham juntos?"],
@@ -503,7 +506,7 @@ std::string_view web_chat_html() noexcept {
       root.className = "welcome";
       const inner = document.createElement("div");
       inner.className = "welcome-inner";
-      inner.innerHTML = '<div class="logo welcome-logo">C</div><h1>Converse com sua <span>IA nativa</span></h1><p>O modelo, a recuperação semântica e a memória persistente são executados localmente pelo motor C++.</p>';
+      inner.innerHTML = '<div class="logo welcome-logo">C</div><h1>Converse com sua <span>IA nativa</span></h1><p>Use <code>--local</code> para ativar Qwen3 GGUF; memória, recuperação e servidor continuam locais no motor C++.</p>';
       const grid = document.createElement("div");
       grid.className = "suggestions";
       for (const [title, text] of suggestions) {
@@ -605,14 +608,28 @@ std::string_view web_chat_html() noexcept {
         if (!response.ok || !data.ok) throw new Error(data.error || "núcleo indisponível");
         byId("statusDot").classList.add("online");
         const geminiOnline = data.language_api && data.language_provider === "gemini";
+        const openModelOnline = data.language_api && data.language_provider === "local-open-model";
         const apiWaiting = data.language_api_state === "missing-key";
-        byId("runtimeStatus").textContent = geminiOnline ? "Gemini conectado"
+        byId("runtimeStatus").textContent = openModelOnline ? "IA aberta local conectada"
+          : geminiOnline ? "Gemini conectado"
           : data.language_api ? "API linguística online"
           : apiWaiting ? "API sem chave · fallback local" : "Núcleo local online";
-        byId("runtimeDetail").textContent = `${data.parameters.toLocaleString("pt-BR")} parâmetros locais · ${data.memories} memórias`;
+        const activeParameters = Number(data.language_parameters || 0);
+        const contextDetail = Number(data.language_context || 0)
+          ? ` · ${Number(data.language_context).toLocaleString("pt-BR")} ctx` : "";
+        byId("runtimeDetail").textContent = activeParameters
+          ? `${activeParameters.toLocaleString("pt-BR")} parâmetros do modelo${contextDetail} · ${data.memories} memórias`
+          : data.language_api
+            ? `Parâmetros não informados${contextDetail} · ${data.memories} memórias`
+            : `${data.parameters.toLocaleString("pt-BR")} parâmetros GRU · ${data.memories} memórias · use --local para Qwen3`;
         byId("modelLabel").textContent = data.language_api ? data.language_model
           : apiWaiting ? `${data.language_model} · sem chave` : `GRU ${data.layers}×${data.hidden}`;
         if (data.language_api && !maxTokensTouched && maxTokens.value === "96") maxTokens.value = "1024";
+        if (openModelOnline && !topKTouched) topK.value = "20";
+        if (openModelOnline && !temperatureTouched) {
+          temperature.value = "0.6";
+          temperatureValue.textContent = "0.6";
+        }
         byId("languageApi").disabled = !data.language_api;
         if (!data.language_api) byId("languageApi").checked = false;
         byId("internet").disabled = !data.internet;
@@ -659,8 +676,9 @@ std::string_view web_chat_html() noexcept {
         if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
         thinking.remove();
         const recalled = Array.isArray(data.recalled) ? data.recalled.length : 0;
-        const provider = data.provider === "language-api" ? `API · ${data.provider_model}`
-          : data.provider === "internet" ? "Internet" : "Modelo local";
+        const provider = data.provider === "local-open-model" ? `Local · ${data.provider_model}`
+          : data.provider === "language-api" ? `API · ${data.provider_model}`
+          : data.provider === "internet" ? "Internet" : "GRU local";
         const meta = `${provider} · ${data.latency_ms} ms${recalled ? ` · ${recalled} memória${recalled > 1 ? "s" : ""}` : ""}`;
         appendMessage("assistant", data.reply || "O modelo encerrou a geração sem produzir texto.", meta);
         if (data.warning) showToast(data.warning);
@@ -758,7 +776,11 @@ std::string_view web_chat_html() noexcept {
         sendMessage();
       }
     });
-    temperature.addEventListener("input", () => { temperatureValue.textContent = Number(temperature.value).toFixed(1); });
+    temperature.addEventListener("input", () => {
+      temperatureTouched = true;
+      temperatureValue.textContent = Number(temperature.value).toFixed(1);
+    });
+    topK.addEventListener("change", () => { topKTouched = true; });
     maxTokens.addEventListener("change", () => { maxTokensTouched = true; });
     byId("newChat").addEventListener("click", clearConversation);
     byId("mobileMenu").addEventListener("click", openSidebar);

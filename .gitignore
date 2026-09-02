@@ -10,4 +10,7 @@ zig-cache/
 # Artefatos locais do projeto Cortex Native AI.
 cortex-native/build/
 cortex-native/state*/
+cortex-native/models/
+cortex-native/runtime/
+cortex-native/*.gguf
 cortex-native/.cortex-backups/

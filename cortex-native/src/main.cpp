@@ -1,5 +1,6 @@
 #include "cortex/agent.hpp"
 #include "cortex/core.hpp"
+#include "cortex/local_model.hpp"
 #include "cortex/memory.hpp"
 #include "cortex/neural_model.hpp"
 #include "cortex/tokenizer.hpp"
@@ -12,6 +13,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -96,6 +98,19 @@ public:
             throw Error("inteiro inválido para --" + std::string(key));
         }
         return static_cast<std::uint64_t>(parsed);
+    }
+
+    [[nodiscard]] int int_value(std::string_view key, int fallback) const {
+        if (!has(key)) {
+            return fallback;
+        }
+        const std::string value = get(key);
+        std::size_t consumed = 0U;
+        const int parsed = std::stoi(value, &consumed, 0);
+        if (consumed != value.size()) {
+            throw Error("inteiro inválido para --" + std::string(key));
+        }
+        return parsed;
     }
 
     [[nodiscard]] float float_value(std::string_view key, float fallback) const {
@@ -238,6 +253,7 @@ Uso:
   cortex forget   --id N [--state DIR]
   cortex chat     [--state DIR] [opções]
   cortex serve    [--state DIR] [--host 0.0.0.0] [--port 8080]
+  cortex models   (lista modelos abertos e recomendação por RAM)
   cortex inspect  [--state DIR]
   cortex benchmark [--state DIR] [--steps 1000]
 
@@ -249,8 +265,12 @@ Geração/agente:
   --tokens 96 --top-k 8 --temperature 0.6 --repetition 1.08 --seed N
   --memory-hits 3 --memory-score 0.65 --context 512 --no-remember
 
-Interface web, internet e API linguística:
+Interface web, modelo aberto local, internet e APIs:
   --host 0.0.0.0 --port 8080 --workers 4 [--no-internet]
+  --local [--local-profile tiny|edge|daily|workstation|max]
+  --local-model ARQUIVO.gguf | --local-hf ORG/MODELO:QUANTIZACAO
+  --llama-server CAMINHO --local-port 8081 --local-context 8192
+  --local-threads N --local-gpu-layers N --local-startup-timeout 1200
   --gemini  (ou apenas defina GEMINI_API_KEY no ambiente)
   --llm-url URL --llm-model MODELO [--llm-key-env NOME]
   --llm-reasoning low|medium|high [--llm-timeout 45]
@@ -453,29 +473,121 @@ void command_serve(const Arguments& arguments) {
     options.language_api.model = arguments.get(
         "llm-model", environment_value("CORTEX_LLM_MODEL"));
 
-    // Com GEMINI_API_KEY presente, a rota oficial é ativada sem configuração adicional.
-    // --gemini também ignora defaults CORTEX_* antigos, salvo override explícito na CLI.
-    const bool gemini_flag = arguments.flag("gemini", false);
-    const bool gemini = gemini_flag
-                        || (options.language_api.endpoint.empty()
-                            && environment_present("GEMINI_API_KEY"));
-    if (gemini && (options.language_api.endpoint.empty()
-                   || (gemini_flag && !arguments.has("llm-url")))) {
-        options.language_api.endpoint =
-            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+    const bool custom_local_path = arguments.has("local-model");
+    const bool custom_local_hf = arguments.has("local-hf");
+    if (custom_local_path && custom_local_hf) {
+        throw Error("use somente um entre --local-model e --local-hf");
     }
-    if (gemini && !arguments.has("llm-model")) {
-        options.language_api.model = environment_value("GEMINI_MODEL", "gemini-3.7-flash");
+    if (arguments.has("local-profile") && (custom_local_path || custom_local_hf)) {
+        throw Error("--local-profile não pode ser combinado com uma fonte local customizada");
     }
-    options.language_api.api_key_environment = arguments.get(
-        "llm-key-env", gemini ? "GEMINI_API_KEY" : "CORTEX_LLM_API_KEY");
-    options.language_api.reasoning_effort = arguments.get(
-        "llm-reasoning", gemini ? environment_value("GEMINI_REASONING_EFFORT", "medium")
-                                 : environment_value("CORTEX_LLM_REASONING"));
-    options.language_api.timeout_seconds = arguments.size_value("llm-timeout", 45U);
+    const bool local_requested = arguments.flag("local", false)
+                                 || arguments.has("local-profile")
+                                 || custom_local_path || custom_local_hf;
+    std::optional<cortex::OpenModelProfile> selected_profile;
+    std::optional<cortex::LocalModelServer> local_server;
+
+    if (local_requested) {
+        cortex::LocalModelOptions local;
+        if (!custom_local_path && !custom_local_hf) {
+            const std::size_t memory_gib = cortex::system_memory_gib();
+            selected_profile = arguments.has("local-profile")
+                ? cortex::open_model_profile(arguments.get("local-profile"))
+                : cortex::recommended_open_model_profile(memory_gib);
+            std::cout << "Perfil local: " << selected_profile->id << " ("
+                      << selected_profile->display_name << ") | RAM detectada: "
+                      << (memory_gib == 0U ? "desconhecida" : std::to_string(memory_gib) + " GiB")
+                      << '\n';
+            if (memory_gib != 0U && memory_gib < selected_profile->minimum_ram_gib) {
+                std::cerr << "aviso: o perfil recomenda pelo menos "
+                          << selected_profile->minimum_ram_gib << " GiB de RAM\n";
+            }
+            local.hugging_face_reference = selected_profile->hugging_face_reference;
+            local.context_tokens = selected_profile->recommended_context;
+        } else if (custom_local_path) {
+            local.model_path = arguments.get("local-model");
+        } else {
+            local.hugging_face_reference = arguments.get("local-hf");
+        }
+        local.executable = arguments.get(
+            "llama-server", environment_value("CORTEX_LLAMA_SERVER", "llama-server"));
+        local.alias = arguments.get("local-alias", "cortex-local");
+        const std::size_t local_port = arguments.size_value("local-port", local.port);
+        if (local_port == 0U || local_port > 65'535U) {
+            throw Error("--local-port deve estar entre 1 e 65535");
+        }
+        local.port = static_cast<std::uint16_t>(local_port);
+        local.context_tokens = arguments.size_value("local-context", local.context_tokens);
+        local.threads = arguments.size_value("local-threads", local.threads);
+        local.gpu_layers = arguments.int_value("local-gpu-layers", local.gpu_layers);
+        local.startup_timeout_seconds = arguments.size_value(
+            "local-startup-timeout", local.startup_timeout_seconds);
+
+        local_server.emplace(local);
+        local_server->start();
+        options.language_api.endpoint = local_server->endpoint();
+        options.language_api.model = local.alias;
+        options.language_api.provider = "local-open-model";
+        options.language_api.display_model = selected_profile
+            ? selected_profile->display_name
+            : arguments.get("local-name",
+                            custom_local_path ? local.model_path.filename().string()
+                                              : local.hugging_face_reference);
+        options.language_api.parameter_count = selected_profile
+                                               ? selected_profile->parameter_count : 0U;
+        options.language_api.context_tokens = local.context_tokens;
+        options.language_api.api_key_environment.clear();
+        options.language_api.reasoning_effort.clear();
+        options.language_api.extended_sampling = true;
+        options.language_api.top_p = 0.8F;
+        options.language_api.presence_penalty = 1.5F;
+    } else {
+        // Com GEMINI_API_KEY presente, a rota oficial é ativada sem configuração adicional.
+        const bool gemini_flag = arguments.flag("gemini", false);
+        const bool gemini = gemini_flag
+                            || (options.language_api.endpoint.empty()
+                                && environment_present("GEMINI_API_KEY"));
+        if (gemini && (options.language_api.endpoint.empty()
+                       || (gemini_flag && !arguments.has("llm-url")))) {
+            options.language_api.endpoint =
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+        }
+        if (gemini && !arguments.has("llm-model")) {
+            options.language_api.model = environment_value("GEMINI_MODEL", "gemini-3.7-flash");
+        }
+        options.language_api.provider = gemini ? "gemini" : "openai-compatible";
+        options.language_api.api_key_environment = arguments.get(
+            "llm-key-env", gemini ? "GEMINI_API_KEY" : "CORTEX_LLM_API_KEY");
+        options.language_api.reasoning_effort = arguments.get(
+            "llm-reasoning", gemini
+                ? environment_value("GEMINI_REASONING_EFFORT", "medium")
+                : environment_value("CORTEX_LLM_REASONING"));
+    }
+    options.language_api.timeout_seconds = arguments.size_value(
+        "llm-timeout", local_requested ? 180U : 45U);
+    if (options.language_api.timeout_seconds == 0U
+        || options.language_api.timeout_seconds > 300U) {
+        throw Error("--llm-timeout deve estar entre 1 e 300 segundos");
+    }
     options.self_edit_enabled = arguments.flag("enable-self-edit", false);
     options.source_root = arguments.get("source-root", ".");
     cortex::run_web_chat_server(runtime.tokenizer, runtime.model, runtime.memory, options);
+}
+
+void command_models() {
+    const std::size_t memory_gib = cortex::system_memory_gib();
+    const cortex::OpenModelProfile recommended = cortex::recommended_open_model_profile(memory_gib);
+    std::cout << "RAM detectada: "
+              << (memory_gib == 0U ? "desconhecida" : std::to_string(memory_gib) + " GiB")
+              << "\nPerfis GGUF disponíveis:\n";
+    for (const cortex::OpenModelProfile& profile : cortex::available_open_model_profiles()) {
+        std::cout << (profile.id == recommended.id ? "* " : "  ")
+                  << std::left << std::setw(12) << profile.id
+                  << std::setw(27) << profile.display_name
+                  << " RAM >= " << profile.minimum_ram_gib << " GiB | ctx "
+                  << profile.recommended_context << '\n';
+    }
+    std::cout << "* recomendado automaticamente; inicie com: cortex serve --state state --local\n";
 }
 
 void command_inspect(const Arguments& arguments) {
@@ -548,6 +660,8 @@ int main(int argc, char** argv) {
             command_chat(arguments);
         } else if (command == "serve") {
             command_serve(arguments);
+        } else if (command == "models") {
+            command_models();
         } else if (command == "inspect") {
             command_inspect(arguments);
         } else if (command == "benchmark") {

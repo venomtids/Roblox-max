@@ -51,10 +51,19 @@ struct LanguageApiConfig final {
     // Endpoint compatível com POST /v1/chat/completions (OpenAI, Groq, llama.cpp etc.).
     std::string endpoint;
     std::string model;
+    // Metadados públicos para status/UI; não alteram o protocolo OpenAI-compatible.
+    std::string provider = "openai-compatible";
+    std::string display_model;
+    std::uint64_t parameter_count = 0U;
+    std::size_t context_tokens = 0U; // zero quando o provedor gerencia o limite.
     // O segredo é lido desta variável e nunca é aceito pela interface web.
     std::string api_key_environment = "CORTEX_LLM_API_KEY";
     // Campo OpenAI-compatible opcional; Gemini aceita low/medium/high.
     std::string reasoning_effort;
+    // llama.cpp/Qwen aceita estes controles extras de amostragem.
+    bool extended_sampling = false;
+    float top_p = 0.8F;
+    float presence_penalty = 1.5F;
     std::size_t timeout_seconds = 30U;
 };
 
@@ -73,7 +82,8 @@ public:
     [[nodiscard]] LanguageCompletion complete(std::string_view system_prompt,
                                                std::string_view user_prompt,
                                                float temperature,
-                                               std::size_t maximum_tokens) const;
+                                               std::size_t maximum_tokens,
+                                               std::size_t top_k = 20U) const;
 
 private:
     LanguageApiConfig config_;

@@ -1,10 +1,12 @@
 #include "cortex/connectivity.hpp"
 #include "cortex/core.hpp"
+#include "cortex/local_model.hpp"
 #include "cortex/memory.hpp"
 #include "cortex/neural_model.hpp"
 #include "cortex/tokenizer.hpp"
 #include "cortex/web_server.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -63,6 +65,55 @@ void test_connectivity_protocol() {
            "configuração padrão possui 1.003.428 parâmetros treináveis");
 }
 
+void test_open_model_profiles() {
+    const cortex::OpenModelProfile tiny = cortex::open_model_profile("tiny");
+    const cortex::OpenModelProfile edge = cortex::open_model_profile("edge");
+    const cortex::OpenModelProfile daily = cortex::open_model_profile("daily");
+    expect(tiny.parameter_count == 600'000'000ULL
+               && tiny.hugging_face_reference == "Qwen/Qwen3-0.6B-GGUF:Q8_0",
+           "perfil tiny mantém pesos abertos viáveis em máquinas de 2 GiB");
+    expect(edge.parameter_count == 1'700'000'000ULL,
+           "perfil edge troca o GRU por 1,7 bilhão de parâmetros abertos");
+    expect(daily.parameter_count == 4'000'000'000ULL,
+           "perfil daily seleciona Qwen3 4B quantizado");
+    expect(daily.hugging_face_reference == "Qwen/Qwen3-4B-GGUF:Q4_K_M",
+           "perfil diário usa pesos GGUF oficiais e reproduzíveis");
+    expect(cortex::recommended_open_model_profile(2U).id == "tiny"
+               && cortex::recommended_open_model_profile(4U).id == "edge"
+               && cortex::recommended_open_model_profile(8U).id == "daily"
+               && cortex::recommended_open_model_profile(32U).id == "max",
+           "seleção automática respeita a memória disponível");
+
+    cortex::LocalModelOptions options;
+    options.executable = "llama-server-test";
+    options.hugging_face_reference = daily.hugging_face_reference;
+    options.alias = "cortex-local";
+    options.port = 18'081U;
+    options.context_tokens = 8'192U;
+    options.threads = 4U;
+    options.gpu_layers = 99;
+    const std::vector<std::string> command = cortex::local_model_arguments(options);
+    const auto contains = [&](std::string_view value) {
+        return std::any_of(command.begin(), command.end(), [&](const std::string& item) {
+            return item == value;
+        });
+    };
+    expect(contains("-hf") && contains(daily.hugging_face_reference),
+           "launcher passa referência Hugging Face ao llama.cpp sem shell");
+    expect(contains("127.0.0.1") && contains("18081"),
+           "servidor GGUF fica restrito ao loopback em porta dedicada");
+    expect(contains("8192") && contains("99") && contains("--jinja"),
+           "launcher aplica contexto, chat template e offload configurados");
+
+    bool rejected = false;
+    try {
+        static_cast<void>(cortex::open_model_profile("gemini-magico"));
+    } catch (const cortex::Error&) {
+        rejected = true;
+    }
+    expect(rejected, "perfil inexistente é rejeitado em vez de prometer parâmetros falsos");
+}
+
 void set_environment(const char* name, const char* value) {
 #ifdef _WIN32
     if (_putenv_s(name, value) != 0) throw cortex::Error("falha ao configurar ambiente de teste");
@@ -88,6 +139,9 @@ void test_language_api_payload(const std::string& test_executable) {
     config.model = "gemini-test";
     config.api_key_environment = "CORTEX_TEST_API_KEY";
     config.reasoning_effort = "high";
+    config.extended_sampling = true;
+    config.top_p = 0.8F;
+    config.presence_penalty = 1.5F;
     cortex::LanguageApiClient client(
         config, cortex::NativeHttpClient(test_executable));
     const cortex::LanguageCompletion completion = client.complete(
@@ -222,7 +276,9 @@ void test_embedded_web_interface() {
     expect(html.find("Node.js") != std::string_view::npos,
            "interface informa ausência de runtime Node.js");
     expect(html.find("language_api") != std::string_view::npos,
-           "interface permite selecionar API linguística");
+           "interface permite selecionar modelo avançado");
+    expect(html.find("local-open-model") != std::string_view::npos,
+           "interface identifica execução GGUF realmente local");
     expect(html.find("/api/code/propose") != std::string_view::npos,
            "interface possui fluxo de autoedição controlada");
 }
@@ -271,6 +327,10 @@ int main(int argc, char** argv) {
         const bool explicit_payload = request.find("\\\"model\\\":\\\"gemini-test\\\"")
                                           != std::string::npos
                                       && request.find("\\\"reasoning_effort\\\":\\\"high\\\"")
+                                             != std::string::npos
+                                      && request.find("\\\"top_k\\\":20") != std::string::npos
+                                      && request.find("\\\"top_p\\\":0.8") != std::string::npos
+                                      && request.find("\\\"presence_penalty\\\":1.5")
                                              != std::string::npos;
         const bool autodetected_payload =
             request.find("\\\"model\\\":\\\"gemini-3.7-flash\\\"") != std::string::npos
@@ -290,6 +350,7 @@ int main(int argc, char** argv) {
     const fs::path directory = temporary_test_directory();
     try {
         test_connectivity_protocol();
+        test_open_model_profiles();
         test_language_api_payload(argc > 0 ? argv[0] : "./build/cortex-tests");
         test_matrix();
         test_tokenizer(directory);
