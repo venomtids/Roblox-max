@@ -1,0 +1,36 @@
+name: Cortex C++ Windows
+
+on:
+  push:
+    paths:
+      - "cortex-native/**"
+      - ".github/workflows/cortex-windows.yml"
+  pull_request:
+    paths:
+      - "cortex-native/**"
+      - ".github/workflows/cortex-windows.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  mingw64:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+        working-directory: cortex-native
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            make
+            mingw-w64-x86_64-gcc
+      - name: Testes nativos C++20
+        run: make test
+      - name: Validar script de distribuição Windows
+        shell: cmd
+        run: set "PATH=C:\msys64\mingw64\bin;%PATH%" && call build-windows.cmd

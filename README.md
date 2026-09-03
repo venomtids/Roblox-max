@@ -2,6 +2,10 @@
 
 Aplicativos nativos para Windows 10/11. **Não usam nem instalam Python, Node.js, npm, .NET, WebView ou runtimes externos.**
 
+## Projeto separado: Cortex Native AI
+
+O agente C++20 combina o **Cognitive Mesh**, um GRU auxiliar de aproximadamente 1 milhão de parâmetros, **70 tópicos curados**, ingestão de arquivos/diretórios, análise textual e do próprio comportamento, filtro universal, memória persistente, cálculo, benchmark e pesquisa HTTPS sem chave. O perfil Samsung X40 executa **IBM Granite 4.2 3B Q4_K_M** local via llama.cpp, CPU-only, quatro threads e contexto de 4.096 tokens; Flash/Medium/High controlam esforço, contexto e revisão. A autoevolução segmenta fontes grandes em patches SEARCH/REPLACE, pode criar ou modificar arquivos e preparar validações, mas exige uma autorização de uso único para cada escrita, execução ou rollback. Nenhuma API ou chave é necessária. Tudo está isolado em [`cortex-native/`](cortex-native/README.md); no Windows, extraia e dê dois cliques em [`Cortex-One-Click-Windows.cmd`](cortex-native/Cortex-One-Click-Windows.cmd).
+
 ## Bootstrapper Advanced — recomendado
 
 Versão completa com layout moderno em tema escuro, launcher, diagnóstico de crashes, análise de logs, limpeza e reparo oficial:
