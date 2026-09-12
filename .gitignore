@@ -1,0 +1,17 @@
+# Arquivos temporarios de compilacao
+*.o
+*.obj
+*.pdb
+zig-cache/
+.zig-cache/
+
+# O executavel final em release/ e distribuido intencionalmente.
+
+# Artefatos locais do projeto Cortex Native AI.
+cortex-native/build/
+cortex-native/state*/
+cortex-native/models/
+cortex-native/runtime/
+cortex-native/*.gguf
+cortex-native/.cortex-backups/
+cortex-native/.cortex-validation/

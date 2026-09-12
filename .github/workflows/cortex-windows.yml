@@ -1,0 +1,65 @@
+name: Cortex C++ Windows
+
+on:
+  push:
+    paths:
+      - "cortex-native/**"
+      - ".github/workflows/cortex-windows.yml"
+  pull_request:
+    paths:
+      - "cortex-native/**"
+      - ".github/workflows/cortex-windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mingw64:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+        working-directory: cortex-native
+    steps:
+      - uses: actions/checkout@v5
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            make
+            mingw-w64-x86_64-gcc
+      - name: Toolchain
+        run: |
+          g++ --version | head -n 1
+          make --version | head -n 1
+      - name: Testes nativos C++20
+        run: |
+          set -o pipefail
+          if make test > build.log 2>&1; then
+            tail -n 5 build.log
+          else
+            tail -n 60 build.log
+            # A saida completa de compilacao fica no artifact; as linhas decisivas
+            # tambem viram anotacoes para aparecerem direto no resumo do check.
+            echo "::error title=make test falhou::saida completa no artefato cortex-mingw-build-log"
+            tr -d '\r' < build.log \
+              | grep -a . \
+              | tail -n 8 \
+              | sed -e 's/%/%25/g' \
+              | while IFS= read -r line; do
+                  echo "::error title=MinGW::${line}"
+                done
+            exit 1
+          fi
+      - name: Publicar log do build MinGW
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cortex-mingw-build-log
+          path: cortex-native/build.log
+          if-no-files-found: ignore
+      - name: Validar script de distribuição Windows
+        shell: cmd
+        run: set "PATH=C:\msys64\mingw64\bin;%PATH%" && call build-windows.cmd
