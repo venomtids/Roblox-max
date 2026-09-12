@@ -253,9 +253,12 @@ void LocalModelServer::start() {
 
 #ifdef _WIN32
     std::string command_line;
-    for (const std::string& argument : arguments) {
-        if (!command_line.empty()) command_line.push_back(' ');
-        command_line += quote_windows_argument(argument);
+    // O primeiro argumento é o llama-server: resolve a extensão para que o
+    // binário seja encontrado mesmo quando o caminho chega sem `.exe`.
+    command_line = quote_windows_argument(resolve_executable_path(arguments.front()));
+    for (std::size_t index = 1U; index < arguments.size(); ++index) {
+        command_line.push_back(' ');
+        command_line += quote_windows_argument(arguments[index]);
     }
     std::vector<char> mutable_command(command_line.begin(), command_line.end());
     mutable_command.push_back('\0');

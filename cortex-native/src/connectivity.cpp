@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -281,9 +282,12 @@ void limit_internet_result(InternetResult& result) {
     SetHandleInformation(parent_output_read, HANDLE_FLAG_INHERIT, 0);
 
     std::string command_line;
-    for (const std::string& argument : arguments) {
-        if (!command_line.empty()) command_line.push_back(' ');
-        command_line += quote_windows_argument(argument);
+    // O primeiro argumento é o executável: no Windows ele precisa de extensão
+    // resolvida quando o processo foi iniciado por um shell estilo MSYS2.
+    command_line = quote_windows_argument(resolve_executable_path(arguments.front()));
+    for (std::size_t index = 1U; index < arguments.size(); ++index) {
+        command_line.push_back(' ');
+        command_line += quote_windows_argument(arguments[index]);
     }
     std::vector<char> mutable_command(command_line.begin(), command_line.end());
     mutable_command.push_back('\0');
@@ -534,6 +538,70 @@ std::optional<std::string> json_string_field(std::string_view json,
     return std::nullopt;
 }
 
+// Lê um inteiro sem sinal de um campo JSON simples (por exemplo `completion_tokens`).
+// O parser do projeto é deliberadamente mínimo e auditável: não interpreta objetos
+// aninhados, apenas o par `"campo": número`.
+[[nodiscard]] std::size_t json_unsigned_field(std::string_view json,
+                                              std::string_view field) {
+    const std::string needle = "\"" + std::string(field) + "\"";
+    std::size_t position = json.find(needle);
+    if (position == std::string_view::npos) return 0U;
+    position += needle.size();
+    while (position < json.size() && (json[position] == ' ' || json[position] == '\t'
+                                      || json[position] == '\r' || json[position] == '\n')) {
+        ++position;
+    }
+    if (position >= json.size() || json[position] != ':') return 0U;
+    ++position;
+    while (position < json.size() && (json[position] == ' ' || json[position] == '\t'
+                                      || json[position] == '\r' || json[position] == '\n')) {
+        ++position;
+    }
+    std::size_t value = 0U;
+    bool any_digit = false;
+    while (position < json.size() && json[position] >= '0' && json[position] <= '9') {
+        const std::size_t digit = static_cast<std::size_t>(json[position] - '0');
+        if (value > (std::numeric_limits<std::size_t>::max() - digit) / 10U) return 0U;
+        value = value * 10U + digit;
+        any_digit = true;
+        ++position;
+    }
+    return any_digit ? value : 0U;
+}
+
+std::string resolve_executable_path(std::string_view executable) {
+    if (executable.empty() || executable.size() > 4'096U) {
+        throw Error("executável vazio ou grande demais");
+    }
+    std::string name(executable);
+#ifndef _WIN32
+    return name;
+#else
+    // Caminhos sem separador podem ser resolvidos pelo PATH do Windows:
+    // nesse caso não acrescentamos nada, porque o diretório atual não é
+    // consultado da mesma forma que o PATH.
+    const bool looks_like_path = name.find('/') != std::string::npos
+                                 || name.find('\\') != std::string::npos;
+    if (!looks_like_path) {
+        return name;
+    }
+    std::error_code error;
+    if (std::filesystem::is_regular_file(name, error)) return name;
+    if (name.size() >= 4U
+        && name.compare(name.size() - 4U, 4U, ".exe") == 0) {
+        return name;
+    }
+    const std::string with_extension = name + ".exe";
+    if (std::filesystem::is_regular_file(with_extension, error)) return with_extension;
+    // Barra invertida e ausência de `./` aumentam a chance de o CreateProcess
+    // resolver o caminho relativo quando o arquivo existe em outro formato.
+    std::string normalized = name;
+    std::replace(normalized.begin(), normalized.end(), '/', '\\');
+    if (std::filesystem::is_regular_file(normalized, error)) return normalized;
+    return name;
+#endif
+}
+
 NativeHttpClient::NativeHttpClient(std::string executable)
     : executable_(std::move(executable)) {
     if (executable_.empty()) {
@@ -725,12 +793,24 @@ LanguageCompletion LanguageApiClient::complete(std::string_view system_prompt,
     std::optional<std::string> content = json_string_field(response.body, "content");
     if (!content || content->empty()) content = json_string_field(response.body, "output_text");
     if (!content || content->empty()) {
+        // Um modelo com raciocínio pode consumir todo o orçamento dentro do
+        // bloco de pensamento. Distinguir esse caso evita tratar um limite de
+        // tokens como resposta malformada do servidor.
+        const std::optional<std::string> reasoning =
+            json_string_field(response.body, "reasoning_content");
+        if (reasoning && !reasoning->empty()) {
+            throw Error("modelo encerrou o orçamento dentro do raciocínio, sem resposta final");
+        }
         throw Error("API de linguagem respondeu sem campo content");
     }
-    return LanguageCompletion{
-        without_private_reasoning(std::move(*content)),
-        config_.display_model.empty() ? config_.model : config_.display_model
-    };
+    LanguageCompletion completion;
+    completion.text = without_private_reasoning(std::move(*content));
+    completion.model = config_.display_model.empty() ? config_.model : config_.display_model;
+    completion.reasoning = without_private_reasoning(
+        json_string_field(response.body, "reasoning_content").value_or(std::string{}));
+    completion.prompt_tokens = json_unsigned_field(response.body, "prompt_tokens");
+    completion.generated_tokens = json_unsigned_field(response.body, "completion_tokens");
+    return completion;
 }
 
 InternetSearch::InternetSearch(NativeHttpClient http) : http_(std::move(http)) {}

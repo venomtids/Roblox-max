@@ -1342,12 +1342,24 @@ private:
                 if (!selected_assessment.accepted) {
                     model_response_rejected = true;
                     if (!warning.empty()) warning += "; ";
-                    warning += "filtro nativo rejeitou resposta desconectada ou degradada";
+                    if (language_api_.config().provider == "local-open-model") {
+                        // Sem esta distinção a interface sugeria iniciar o GGUF
+                        // mesmo com um modelo local já ativo e saudável.
+                        warning += "modelo local ativo (";
+                        warning += completion.model;
+                        warning += ") respondeu, mas o filtro nativo rejeitou o texto; "
+                                   "tente potência high ou confira o GGUF";
+                    } else {
+                        warning += "filtro nativo rejeitou resposta desconectada ou degradada";
+                    }
                 } else {
                     answer = std::move(draft);
                     provider = language_api_.config().provider == "local-open-model"
                                ? "local-open-model" : "language-api";
                     provider_model = completion.model;
+                    // Telemetria real do provedor: antes o contador ficava zerado
+                    // mesmo quando o GGUF havia gerado a resposta.
+                    generated_tokens = completion.generated_tokens;
                 }
             } catch (const std::exception& exception) {
                 if (!warning.empty()) warning += "; ";

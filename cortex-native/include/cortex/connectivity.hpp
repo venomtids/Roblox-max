@@ -18,6 +18,12 @@ struct NativeHttpResponse final {
     std::string body;
 };
 
+// No Windows, o shell do MSYS2/MinGW entrega caminhos como `./build/cortex-tests`
+// sem a extensão `.exe`. CreateProcess só encontra o binário depois de resolver
+// a extensão, então esta função devolve um caminho utilizável e deixa nomes que
+// dependem do PATH inalterados (por exemplo `curl` ou `llama-server`).
+[[nodiscard]] std::string resolve_executable_path(std::string_view executable);
+
 class NativeHttpClient final {
 public:
     explicit NativeHttpClient(std::string executable = {});
@@ -79,6 +85,12 @@ struct LanguageApiConfig final {
 struct LanguageCompletion final {
     std::string text;
     std::string model;
+    // Bloco de raciocínio devolvido em campo separado. Nunca é exibido como
+    // resposta final, mas confirma que o controle de thinking chegou ao modelo.
+    std::string reasoning;
+    // Contadores do provedor compatível com OpenAI, usados na telemetria da UI.
+    std::size_t prompt_tokens = 0U;
+    std::size_t generated_tokens = 0U;
 };
 
 class LanguageApiClient final {

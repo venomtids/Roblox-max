@@ -375,6 +375,30 @@ void test_language_api_payload(const std::string& test_executable) {
                && granite_low.text == "resposta Granite"
                && granite_flash.text == "resposta Granite",
            "cliente mapeia High/Medium/Flash para full/low/off, força amostragem Granite e oculta trace");
+    expect(granite_completion.reasoning == "trace privado"
+               && granite_completion.prompt_tokens == 123U
+               && granite_completion.generated_tokens == 45U,
+           "cliente separa reasoning_content do texto e preserva contadores de uso do provedor");
+
+    // Somente raciocínio, sem resposta final: precisa ser um erro específico, não
+    // uma resposta vazia silenciosa.
+    set_environment("CORTEX_TEST_FAKE_CURL", "1");
+    set_environment("CORTEX_TEST_GRANITE", "1");
+    set_environment("CORTEX_TEST_GRANITE_REASONING_ONLY", "1");
+    bool reasoning_only_detected = false;
+    std::string reasoning_only_message;
+    try {
+        static_cast<void>(granite.complete("Seja breve.", "Responda.", 1.0F, 256U, 8U,
+                                           cortex::LanguageReasoningMode::disabled));
+    } catch (const cortex::Error& error) {
+        reasoning_only_message = error.what();
+        reasoning_only_detected = reasoning_only_message.find("raciocínio") != std::string::npos;
+    }
+    clear_environment("CORTEX_TEST_GRANITE_REASONING_ONLY");
+    clear_environment("CORTEX_TEST_GRANITE");
+    clear_environment("CORTEX_TEST_FAKE_CURL");
+    expect(reasoning_only_detected && !reasoning_only_message.empty(),
+           "resposta apenas com raciocínio vira erro explicativo em vez de resposta vazia");
 
     config.reasoning_effort = "extreme";
     bool rejected = false;
@@ -911,6 +935,44 @@ void test_long_term_memory(const fs::path& directory) {
 
 } // namespace
 
+void test_executable_resolution(const fs::path& directory) {
+    // Nome sem separador continua dependendo do PATH: reescrevê-lo mudaria a
+    // semântica de busca do Windows.
+    expect(cortex::resolve_executable_path("curl") == "curl",
+           "resolução preserva binário procurado no PATH");
+    expect(cortex::resolve_executable_path("llama-server") == "llama-server",
+           "resolução preserva llama-server sem extensão");
+
+    const fs::path tool = directory / "cortex-fake-tool";
+    {
+        std::ofstream stream(tool);
+        stream << "binario de teste";
+    }
+    expect(cortex::resolve_executable_path(tool.string()) == tool.string(),
+           "resolução preserva caminho existente");
+
+#ifdef _WIN32
+    // Regressão da falha do CI MinGW: `make test` executa ./build/cortex-tests,
+    // o argv[0] chega sem `.exe` e o subprocesso não era encontrado.
+    const fs::path extensionless = directory / "cortex-fake-tool-sem-ext";
+    const fs::path with_extension = directory / "cortex-fake-tool-sem-ext.exe";
+    {
+        std::ofstream stream(with_extension);
+        stream << "binario de teste";
+    }
+    expect(cortex::resolve_executable_path(extensionless.string()) == with_extension.string(),
+           "resolução acrescenta .exe quando o shell do MinGW omite a extensão");
+#endif
+
+    bool rejected = false;
+    try {
+        static_cast<void>(cortex::resolve_executable_path(""));
+    } catch (const cortex::Error&) {
+        rejected = true;
+    }
+    expect(rejected, "resolução rejeita executável vazio");
+}
+
 int main(int argc, char** argv) {
     // O próprio binário também simula as duas fontes HTTPS. DuckDuckGo devolve
     // JSON vazio e a segunda chamada só responde se a consulta chegou codificada.
@@ -967,12 +1029,23 @@ int main(int argc, char** argv) {
                                && request.find(expected_low_effort
                                       ? "\\\"low_effort\\\":true"
                                       : "\\\"low_effort\\\":false") != std::string::npos;
+            if (std::getenv("CORTEX_TEST_GRANITE_REASONING_ONLY") != nullptr) {
+                // Cenário real: o orçamento acaba dentro de <think> e o provedor
+                // devolve apenas reasoning_content, sem resposta final.
+                std::cout << "{\"choices\":[{\"message\":{\"content\":\"\","
+                             "\"reasoning_content\":\"pensando sem concluir\"}}],"
+                             "\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":256}}\n"
+                             "__CORTEX_HTTP_STATUS__:200";
+                return 0;
+            }
             const std::string content = valid
                 ? "<think>raciocínio privado</think> resposta Granite"
                 : "payload Granite inválido";
             std::cout << "{\"choices\":[{\"message\":{\"content\":"
                       << cortex::json_quote(content)
-                      << "}}]}\n__CORTEX_HTTP_STATUS__:200";
+                      << ",\"reasoning_content\":\"trace privado\"}}],"
+                         "\"usage\":{\"prompt_tokens\":123,\"completion_tokens\":45,"
+                         "\"total_tokens\":168}}\n__CORTEX_HTTP_STATUS__:200";
             return 0;
         }
         if (std::getenv("CORTEX_TEST_SELF_EDIT") != nullptr) {
@@ -1031,6 +1104,7 @@ int main(int argc, char** argv) {
         test_quality_knowledge_and_power_modes();
         test_native_cognitive_mesh();
         test_open_model_profiles();
+        test_executable_resolution(directory);
         test_language_api_payload(argc > 0 ? argv[0] : "./build/cortex-tests");
         test_internet_search_fallback(argc > 0 ? argv[0] : "./build/cortex-tests");
         test_controlled_self_refinement(
