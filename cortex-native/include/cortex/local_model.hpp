@@ -71,6 +71,9 @@ private:
 #ifdef _WIN32
     void* process_handle_ = nullptr;
     void* thread_handle_ = nullptr;
+    // Job Object com KILL_ON_JOB_CLOSE: o llama-server não sobrevive ao Cortex
+    // nem quando o processo pai é terminado sem executar destrutores.
+    void* job_handle_ = nullptr;
 #else
     int process_id_ = -1;
 #endif

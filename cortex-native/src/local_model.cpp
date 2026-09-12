@@ -19,6 +19,9 @@
 #include <csignal>
 #include <sys/types.h>
 #include <sys/wait.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 #include <unistd.h>
 #endif
 
@@ -61,6 +64,22 @@ void validate_options(const LocalModelOptions& options) {
 }
 
 #ifdef _WIN32
+// Encerrar o Cortex pela janela, por `taskkill` ou por falha não passa pelos
+// destrutores. Sem um Job Object o llama-server continuaria ocupando RAM e
+// porta depois disso, então o job garante que o filho morra com o pai.
+[[nodiscard]] HANDLE create_supervision_job() {
+    HANDLE job = CreateJobObjectA(nullptr, nullptr);
+    if (job == nullptr) return nullptr;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION information{};
+    information.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (SetInformationJobObject(job, JobObjectExtendedLimitInformation, &information,
+                                sizeof(information)) == 0) {
+        CloseHandle(job);
+        return nullptr;
+    }
+    return job;
+}
+
 [[nodiscard]] std::string quote_windows_argument(std::string_view argument) {
     if (argument.find_first_of(" \t\"") == std::string_view::npos) {
         return std::string(argument);
@@ -272,10 +291,21 @@ void LocalModelServer::start() {
     }
     process_handle_ = process.hProcess;
     thread_handle_ = process.hThread;
+    job_handle_ = create_supervision_job();
+    if (job_handle_ != nullptr
+        && AssignProcessToJobObject(static_cast<HANDLE>(job_handle_), process.hProcess) == 0) {
+        CloseHandle(static_cast<HANDLE>(job_handle_));
+        job_handle_ = nullptr;
+    }
 #else
     const pid_t child = fork();
     if (child < 0) throw Error("fork falhou ao iniciar llama-server");
     if (child == 0) {
+#ifdef __linux__
+        // Se o Cortex for encerrado sem rodar destrutores, o kernel encerra o
+        // llama-server em vez de deixar um processo órfão consumindo RAM.
+        static_cast<void>(prctl(PR_SET_PDEATHSIG, SIGKILL));
+#endif
         std::vector<char*> native_arguments;
         native_arguments.reserve(arguments.size() + 1U);
         for (const std::string& argument : arguments) {
@@ -325,6 +355,11 @@ void LocalModelServer::stop() noexcept {
     if (thread_handle_ != nullptr) {
         CloseHandle(static_cast<HANDLE>(thread_handle_));
         thread_handle_ = nullptr;
+    }
+    if (job_handle_ != nullptr) {
+        // Fechar o job encerra qualquer filho restante, inclusive sob falha.
+        CloseHandle(static_cast<HANDLE>(job_handle_));
+        job_handle_ = nullptr;
     }
 #else
     if (process_id_ < 0) return;

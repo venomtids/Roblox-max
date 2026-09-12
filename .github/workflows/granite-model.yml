@@ -1,0 +1,145 @@
+name: Cortex Granite GGUF
+
+# Valida o caminho Granite de ponta a ponta com um llama.cpp real:
+#   * fixture-gguf  — arquitetura `granite` com pesos mínimos, roda em todo PR;
+#   * real-granite  — pesos oficiais do Granite 4.2 3B no alvo Windows,
+#                     disparado manualmente ou toda segunda-feira.
+on:
+  push:
+    paths:
+      - "cortex-native/**"
+      - ".github/workflows/granite-model.yml"
+  pull_request:
+    paths:
+      - "cortex-native/**"
+      - ".github/workflows/granite-model.yml"
+  workflow_dispatch:
+    inputs:
+      run_real_model:
+        description: "Baixar e testar também o Granite 4.2 3B oficial (~2,3 GB)"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 7 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  LLAMA_CPP_REPOSITORY: https://github.com/ggml-org/llama.cpp.git
+  GRANITE_REPOSITORY: ibm-granite/granite-4.2-3b-GGUF
+  GRANITE_QUANTIZATION: Q4_K_M
+
+jobs:
+  fixture-gguf:
+    name: Fixture Granite (llama.cpp real, pesos mínimos)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Obter llama.cpp
+        id: llama
+        run: |
+          git clone --depth 1 "$LLAMA_CPP_REPOSITORY" "$RUNNER_TEMP/llama.cpp"
+          echo "sha=$(git -C "$RUNNER_TEMP/llama.cpp" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache do llama-server
+        id: cache-llama
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/llama.cpp/build/bin
+          key: llama-server-${{ runner.os }}-${{ steps.llama.outputs.sha }}
+
+      - name: Compilar llama-server
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: |
+          cd "$RUNNER_TEMP/llama.cpp"
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF -DGGML_NATIVE=OFF \
+                -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build build --target llama-server -j"$(nproc)"
+
+      - name: Compilar Cortex
+        working-directory: cortex-native
+        run: make release
+
+      - name: Gerar GGUF Granite mínimo
+        working-directory: cortex-native
+        run: |
+          python3 -m pip install --quiet --break-system-packages numpy pyyaml
+          python3 ci/tools/make_tiny_granite_gguf.py \
+            --output "$RUNNER_TEMP/granite-tiny.gguf" \
+            --llama-dir "$RUNNER_TEMP/llama.cpp"
+
+      - name: Integração Granite com o GGUF de fixture
+        working-directory: cortex-native
+        run: |
+          python3 ci/granite_integration_test.py \
+            --cortex build/cortex \
+            --llama-server "$RUNNER_TEMP/llama.cpp/build/bin/llama-server" \
+            --model "$RUNNER_TEMP/granite-tiny.gguf" \
+            --state "$RUNNER_TEMP/state" \
+            --work "$RUNNER_TEMP/work" \
+            --expect fixture
+
+  real-granite-windows:
+    name: Granite 4.2 3B real (Windows, MinGW)
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_real_model)
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: msys2 {0}
+        working-directory: cortex-native
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            make
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-python
+            curl
+            unzip
+
+      - name: Compilar Cortex para Windows
+        run: |
+          make release
+          ./build/cortex --help | head -n 3
+
+      - name: Baixar llama.cpp para Windows (binário CPU)
+        shell: cmd
+        working-directory: cortex-native
+        run: |
+          set "DEST=%RUNNER_TEMP%\llama"
+          mkdir "%DEST%" 2>nul
+          curl -sSL -o "%DEST%\llama.zip" "https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-bin-win-cpu-x64.zip"
+          powershell -NoProfile -Command "Expand-Archive -Force -LiteralPath '%DEST%\llama.zip' -DestinationPath '%DEST%'"
+
+      - name: Baixar o GGUF oficial do Granite 4.2 3B
+        working-directory: cortex-native
+        run: |
+          python3 ci/tools/download_granite_gguf.py \
+            --repository "$GRANITE_REPOSITORY" \
+            --quantization "$GRANITE_QUANTIZATION" \
+            --output "$RUNNER_TEMP/granite"
+
+      - name: Integração Granite com os pesos oficiais
+        working-directory: cortex-native
+        run: |
+          SERVER="$(find "$RUNNER_TEMP/llama" -name llama-server.exe | head -n 1)"
+          MODEL="$(find "$RUNNER_TEMP/granite" -name '*.gguf' | head -n 1)"
+          echo "llama-server: $SERVER"
+          echo "modelo: $MODEL"
+          python3 ci/granite_integration_test.py \
+            --cortex build/cortex \
+            --llama-server "$SERVER" \
+            --model "$MODEL" \
+            --state "$RUNNER_TEMP/state" \
+            --work "$RUNNER_TEMP/work" \
+            --expect real \
+            --startup-timeout 900
