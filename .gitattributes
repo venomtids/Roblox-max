@@ -1,0 +1,2 @@
+# Scripts são armazenados de forma normalizada e materializados como CRLF no Windows.
+*.cmd text eol=crlf
