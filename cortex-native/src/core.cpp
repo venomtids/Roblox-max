@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstring>
 #include <system_error>
+#include <thread>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -427,26 +428,44 @@ void replace_file(const std::filesystem::path& temporary,
 
 #ifdef _WIN32
     // MinGW/Windows pode recusar std::filesystem::rename quando o destino existe
-    // ou quando o handle ainda não foi liberado pelo sistema. A publicação
-    // sempre fecha o BinaryWriter antes de chegar aqui, mas o SO pode manter
-    // o arquivo bloqueado por um instante (antivírus/indexador). Tenta MoveFileEx
-    // e, em caso de Access Denied, tenta remover o destino e renomear novamente.
-    if (::MoveFileExW(temporary.wstring().c_str(), target.wstring().c_str(),
-                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
-        return;
+    // ou quando o handle ainda não foi liberado (antivírus, indexer ou handle
+    // ainda aberto). O arquivo temporário já foi fechado antes de chegar aqui,
+    // mas o SO pode manter o destino bloqueado por um instante.
+    // Tenta MoveFileEx com retry e backoff para ERROR_ACCESS_DENIED (5) e
+    // ERROR_SHARING_VIOLATION (32), que são os dois erros observados no CI.
+    for (int attempt = 0; attempt < 6; ++attempt) {
+        if (::MoveFileExW(temporary.wstring().c_str(), target.wstring().c_str(),
+                          MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+            return;
+        }
+        error = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
+        if (error.value() != 5 && error.value() != 32) {
+            break;
+        }
+        // Pequeno backoff: libera o handle e tenta remover o destino na penúltima tentativa
+        std::this_thread::sleep_for(std::chrono::milliseconds(30 * (attempt + 1)));
+        if (attempt == 3) {
+            std::error_code remove_error;
+            std::filesystem::remove(target, remove_error);
+            if (!remove_error) {
+                std::filesystem::rename(temporary, target, error);
+                if (!error) return;
+            }
+        }
     }
-    error = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
-    if (error.value() == 5) { // ERROR_ACCESS_DENIED
-        std::filesystem::remove(target, error);
-        if (!error) {
+    // Última tentativa: tenta remover e mover com API nativa mais permissiva
+    {
+        std::error_code remove_error;
+        std::filesystem::remove(target, remove_error);
+        if (!remove_error) {
             std::filesystem::rename(temporary, target, error);
             if (!error) return;
-            if (::MoveFileExW(temporary.wstring().c_str(), target.wstring().c_str(),
-                              MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
-                return;
-            }
-            error = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
         }
+        if (::MoveFileExW(temporary.wstring().c_str(), target.wstring().c_str(),
+                          MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+            return;
+        }
+        error = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
     }
 #endif
     std::filesystem::remove(temporary);
