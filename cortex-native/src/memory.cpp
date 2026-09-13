@@ -5,10 +5,19 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <numeric>
 #include <unordered_set>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace cortex {
 namespace {
@@ -60,6 +69,42 @@ constexpr std::size_t maximum_indexed_terms = 192U;
     return std::clamp(0.88F * coverage + 0.12F * jaccard, 0.0F, 1.0F);
 }
 
+[[nodiscard]] bool is_low_memory_available() noexcept {
+#ifdef _WIN32
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (GlobalMemoryStatusEx(&status)) {
+        // Se restar menos de 800 MB, evita construir índice pesado
+        return status.ullAvailPhys < (800ULL * 1024ULL * 1024ULL);
+    }
+    return false;
+#else
+    // Linux/macOS: tenta ler /proc/meminfo, falha silenciosa = assume memória ok
+    try {
+        std::ifstream meminfo("/proc/meminfo");
+        std::string line;
+        while (std::getline(meminfo, line)) {
+            if (line.rfind("MemAvailable:", 0) == 0U) {
+                std::size_t kb = 0U;
+                std::sscanf(line.c_str(), "MemAvailable: %zu", &kb);
+                return kb * 1024ULL < (800ULL * 1024ULL * 1024ULL);
+            }
+        }
+    } catch (...) {}
+    return false;
+#endif
+}
+
+[[nodiscard]] bool would_exceed_memory_budget(std::size_t record_count, std::size_t dimension) noexcept {
+    // Estimativa conservadora: embeddings + índices ~ N*dim*4*1.3
+    const std::size_t embedding_bytes = record_count * dimension * sizeof(float);
+    const std::size_t overhead = embedding_bytes / 3U;
+    const std::size_t total = embedding_bytes + overhead;
+    // Windows 10 com 4 GB: não passa de 1.2 GB para ANN; 8 GB: 2 GB
+    constexpr std::size_t budget = 1200ULL * 1024ULL * 1024ULL;
+    return total > budget || is_low_memory_available();
+}
+
 } // namespace
 
 std::size_t LongTermMemory::ann_target_clusters(std::size_t record_count) noexcept {
@@ -85,80 +130,123 @@ void LongTermMemory::rebuild_ann_locked() const {
     ann_dirty_ = false;
     lexical_inverted_index_.clear();
     if (n == 0U) return;
-    // Reconstrói índice lexical invertido para híbrido em escala
-    lexical_inverted_index_.reserve(n * 2U);
-    for (std::size_t idx = 0U; idx < n; ++idx) {
-        for (const std::string& term : records_[idx].lexical_terms) {
-            lexical_inverted_index_[term].push_back(idx);
+    // Guarda contra OOM no Windows 10 (4-8 GB + HD lento):
+    // se o orçamento estourar, mantém busca exata (que é segura) e evita travar.
+    const std::size_t dim = dimension_;
+    if (would_exceed_memory_budget(n, dim)) {
+        // Não constrói ANN pesado; híbrido usará busca exata linear
+        // Para N moderado ainda tenta índice lexical reduzido
+        if (n < 50000U) {
+            try {
+                lexical_inverted_index_.reserve(std::min<std::size_t>(n * 2U, 200000U));
+                for (std::size_t idx = 0U; idx < n; ++idx) {
+                    for (const std::string& term : records_[idx].lexical_terms) {
+                        auto it = lexical_inverted_index_.find(term);
+                        if (it == lexical_inverted_index_.end()) {
+                            // Limita crescimento: ignora termos muito raros em escala gigante
+                            if (lexical_inverted_index_.size() > 100000U) continue;
+                        }
+                        lexical_inverted_index_[term].push_back(idx);
+                    }
+                }
+            } catch (const std::bad_alloc&) {
+                lexical_inverted_index_.clear();
+            }
         }
+        return;
+    }
+    // Reconstrói índice lexical invertido para híbrido em escala
+    // Para N > 100k, limita para não estourar RAM (usa apenas termos mais frequentes)
+    try {
+        if (n > 100000U) {
+            // N muito grande: não constrói invertido completo, híbrido usará ANN + fallback
+        } else {
+            lexical_inverted_index_.reserve(n * 2U);
+            for (std::size_t idx = 0U; idx < n; ++idx) {
+                for (const std::string& term : records_[idx].lexical_terms) {
+                    lexical_inverted_index_[term].push_back(idx);
+                }
+            }
+        }
+    } catch (const std::bad_alloc&) {
+        lexical_inverted_index_.clear();
+        ann_centroids_.clear();
+        ann_postings_.clear();
+        return;
     }
     if (n < ann_threshold_) return;
     const std::size_t k = ann_target_clusters(n);
     if (k == 0U || k > n) return;
-    const std::size_t dim = dimension_;
     // Inicializa centroides amostrando registros de forma determinística
-    Random rng(static_cast<std::uint64_t>(n * 0x9E3779B97F4A7C15ULL + dimension_ * 31ULL + 0xC07ECAFEULL));
-    ann_centroids_.assign(k, std::vector<float>(dim, 0.0F));
-    ann_postings_.assign(k, {});
-    // k-means++ simplificado: escolhe k registros distintos aleatoriamente
-    std::unordered_set<std::size_t> chosen;
-    chosen.reserve(k * 2U);
-    for (std::size_t c = 0U; c < k; ++c) {
-        std::size_t pick = 0U;
-        for (int attempt = 0; attempt < 100; ++attempt) {
-            pick = static_cast<std::size_t>(rng.next_u64() % n);
-            if (chosen.insert(pick).second) break;
-        }
-        ann_centroids_[c] = records_[pick].embedding;
-    }
-    // Iterações de k-means: adapta quantidade ao tamanho
-    const std::size_t iterations = n > 100000U ? 2U : (n > 10000U ? 3U : 5U);
-    std::vector<std::size_t> assignments(n, 0U);
-    std::vector<std::vector<float>> new_centroids(k, std::vector<float>(dim, 0.0F));
-    std::vector<std::size_t> counts(k, 0U);
-    for (std::size_t iter = 0U; iter < iterations; ++iter) {
-        // Zera acumuladores
-        for (auto& c : new_centroids) std::fill(c.begin(), c.end(), 0.0F);
-        std::fill(counts.begin(), counts.end(), 0U);
-        // Atribuição
-        auto assign_range = [&](std::size_t begin, std::size_t end) {
-            for (std::size_t i = begin; i < end; ++i) {
-                const auto& emb = records_[i].embedding;
-                std::size_t best = 0U;
-                float best_score = -2.0F;
-                for (std::size_t c = 0U; c < k; ++c) {
-                    float s = dot_product(emb, ann_centroids_[c]);
-                    if (s > best_score) {
-                        best_score = s;
-                        best = c;
-                    }
-                }
-                assignments[i] = best;
+    try {
+        Random rng(static_cast<std::uint64_t>(n * 0x9E3779B97F4A7C15ULL + dim * 31ULL + 0xC07ECAFEULL));
+        ann_centroids_.assign(k, std::vector<float>(dim, 0.0F));
+        ann_postings_.assign(k, {});
+        // k-means++ simplificado: escolhe k registros distintos aleatoriamente
+        std::unordered_set<std::size_t> chosen;
+        chosen.reserve(k * 2U);
+        for (std::size_t c = 0U; c < k; ++c) {
+            std::size_t pick = 0U;
+            for (int attempt = 0; attempt < 100; ++attempt) {
+                pick = static_cast<std::size_t>(rng.next_u64() % n);
+                if (chosen.insert(pick).second) break;
             }
-        };
-        global_thread_pool().parallel_for(0U, n, 1024U, assign_range);
-        // Acumula
+            ann_centroids_[c] = records_[pick].embedding;
+        }
+        // Iterações de k-means: adapta quantidade ao tamanho
+        const std::size_t iterations = n > 100000U ? 2U : (n > 10000U ? 3U : 5U);
+        std::vector<std::size_t> assignments(n, 0U);
+        std::vector<std::vector<float>> new_centroids(k, std::vector<float>(dim, 0.0F));
+        std::vector<std::size_t> counts(k, 0U);
+        for (std::size_t iter = 0U; iter < iterations; ++iter) {
+            // Zera acumuladores
+            for (auto& c : new_centroids) std::fill(c.begin(), c.end(), 0.0F);
+            std::fill(counts.begin(), counts.end(), 0U);
+            // Atribuição
+            auto assign_range = [&](std::size_t begin, std::size_t end) {
+                for (std::size_t i = begin; i < end; ++i) {
+                    const auto& emb = records_[i].embedding;
+                    std::size_t best = 0U;
+                    float best_score = -2.0F;
+                    for (std::size_t c = 0U; c < k; ++c) {
+                        float s = dot_product(emb, ann_centroids_[c]);
+                        if (s > best_score) {
+                            best_score = s;
+                            best = c;
+                        }
+                    }
+                    assignments[i] = best;
+                }
+            };
+            global_thread_pool().parallel_for(0U, n, 1024U, assign_range);
+            // Acumula
+            for (std::size_t i = 0U; i < n; ++i) {
+                const std::size_t c = assignments[i];
+                ++counts[c];
+                const auto& emb = records_[i].embedding;
+                auto& acc = new_centroids[c];
+                for (std::size_t d = 0U; d < dim; ++d) acc[d] += emb[d];
+            }
+            // Recomputa centroides
+            for (std::size_t c = 0U; c < k; ++c) {
+                if (counts[c] == 0U) continue;
+                const float inv = 1.0F / static_cast<float>(counts[c]);
+                for (std::size_t d = 0U; d < dim; ++d) new_centroids[c][d] *= inv;
+                normalize_in_place(new_centroids[c]);
+                ann_centroids_[c] = new_centroids[c];
+            }
+        }
+        // Construção final das postings
+        for (auto& p : ann_postings_) p.clear();
         for (std::size_t i = 0U; i < n; ++i) {
             const std::size_t c = assignments[i];
-            ++counts[c];
-            const auto& emb = records_[i].embedding;
-            auto& acc = new_centroids[c];
-            for (std::size_t d = 0U; d < dim; ++d) acc[d] += emb[d];
+            ann_postings_[c].push_back(i);
         }
-        // Recomputa centroides
-        for (std::size_t c = 0U; c < k; ++c) {
-            if (counts[c] == 0U) continue;
-            const float inv = 1.0F / static_cast<float>(counts[c]);
-            for (std::size_t d = 0U; d < dim; ++d) new_centroids[c][d] *= inv;
-            normalize_in_place(new_centroids[c]);
-            ann_centroids_[c] = new_centroids[c];
-        }
-    }
-    // Construção final das postings
-    for (auto& p : ann_postings_) p.clear();
-    for (std::size_t i = 0U; i < n; ++i) {
-        const std::size_t c = assignments[i];
-        ann_postings_[c].push_back(i);
+    } catch (const std::bad_alloc&) {
+        // Em Windows 10 com pouca RAM/HD, evita travar: desativa ANN e usa exato
+        ann_centroids_.clear();
+        ann_postings_.clear();
+        lexical_inverted_index_.clear();
     }
 }
 
