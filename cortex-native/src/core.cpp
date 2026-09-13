@@ -329,6 +329,15 @@ void BinaryWriter::flush() {
     }
 }
 
+void BinaryWriter::close() {
+    if (stream_.is_open()) {
+        stream_.close();
+        if (stream_.fail()) {
+            throw Error("falha ao fechar arquivo binário");
+        }
+    }
+}
+
 BinaryReader::BinaryReader(const std::filesystem::path& path)
     : stream_(path, std::ios::binary) {
     if (!stream_) {
@@ -417,13 +426,28 @@ void replace_file(const std::filesystem::path& temporary,
     }
 
 #ifdef _WIN32
-    // MinGW/Windows pode recusar std::filesystem::rename quando o destino existe.
-    // MoveFileEx substitui sem a janela perigosa de apagar o arquivo válido primeiro.
-    if (::MoveFileExW(temporary.c_str(), target.c_str(),
+    // MinGW/Windows pode recusar std::filesystem::rename quando o destino existe
+    // ou quando o handle ainda não foi liberado pelo sistema. A publicação
+    // sempre fecha o BinaryWriter antes de chegar aqui, mas o SO pode manter
+    // o arquivo bloqueado por um instante (antivírus/indexador). Tenta MoveFileEx
+    // e, em caso de Access Denied, tenta remover o destino e renomear novamente.
+    if (::MoveFileExW(temporary.wstring().c_str(), target.wstring().c_str(),
                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
         return;
     }
     error = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
+    if (error.value() == 5) { // ERROR_ACCESS_DENIED
+        std::filesystem::remove(target, error);
+        if (!error) {
+            std::filesystem::rename(temporary, target, error);
+            if (!error) return;
+            if (::MoveFileExW(temporary.wstring().c_str(), target.wstring().c_str(),
+                              MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+                return;
+            }
+            error = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
+        }
+    }
 #endif
     std::filesystem::remove(temporary);
     throw Error("não foi possível publicar arquivo persistido sem apagar o original: "

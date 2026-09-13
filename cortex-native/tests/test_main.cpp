@@ -933,6 +933,83 @@ void test_long_term_memory(const fs::path& directory) {
     expect(!loaded.erase(alpha), "remoção sinaliza id já ausente");
 }
 
+void test_ann_scale_and_dedup(const fs::path& directory) {
+    constexpr std::size_t dim = 16U;
+    constexpr std::size_t target = 2500U;
+    cortex::LongTermMemory memory(dim);
+    cortex::Random rng(0xC07ECAFEULL);
+    // Gera embeddings pseudo-aleatórios mas determinísticos
+    auto random_vec = [&](cortex::Random& r) {
+        std::vector<float> v(dim);
+        for (float& f : v) f = r.normal(0.0F, 1.0F);
+        cortex::normalize_in_place(v);
+        return v;
+    };
+    std::vector<std::vector<float>> stored;
+    stored.reserve(target);
+    for (std::size_t i = 0U; i < target; ++i) {
+        std::vector<float> v = random_vec(rng);
+        std::string text = "doc escala " + std::to_string(i) + " conteudo teste ann deduplicacao memoria";
+        if (i % 250U == 0U) text += " palavra_chave_unica_" + std::to_string(i);
+        if (i == 1234U) text = "[DOC] Fonte: teste Conteúdo: Ada Lovelace algoritmo maquina analitica escala";
+        stored.push_back(v);
+        memory.remember(text, v);
+    }
+    expect(memory.size() == target, "ingestão em escala preserva contagem");
+    // Antes do índice, ANN ainda não está pronto (lazy)
+    expect(!memory.ann_enabled(), "ANN inicia lazy antes do primeiro rebuild/search");
+    memory.rebuild_index();
+    expect(memory.ann_enabled(), "ANN fica habilitado após rebuild em N>=2048");
+    expect(memory.ann_cluster_count() >= 16U && memory.ann_cluster_count() <= 512U,
+           "ANN cria número de clusters dentro do intervalo esperado");
+    // Busca exata vs ANN: consulta com embedding de doc 1234 deve retornar esse doc no top-3
+    // Usa híbrido para garantir que lexical Ajuda, mas também testa vetor puro
+    const std::size_t probe = 1234U;
+    auto hits = memory.search(stored[probe], 5U);
+    expect(!hits.empty(), "busca ANN retorna hits em escala");
+    bool found_probe = false;
+    for (const auto& h : hits) if (h.text.find("Ada Lovelace") != std::string::npos) found_probe = true;
+    expect(found_probe, "ANN recupera documento alvo entre top-5 em escala");
+    // Híbrido deve priorizar termo exato mesmo com vetor divergente
+    std::vector<float> bad_vec(dim, 0.0F);
+    bad_vec[0] = 1.0F;
+    cortex::normalize_in_place(bad_vec);
+    auto hybrid = memory.hybrid_search("Ada Lovelace algoritmo", bad_vec, 2U, 0.3F);
+    expect(!hybrid.empty() && hybrid.front().text.find("Ada Lovelace") != std::string::npos,
+           "busca híbrida em escala recupera termo exato apesar de vetor ruim");
+    // Deduplicação exata em escala: reinserir mesmo texto não cresce
+    const std::string dup_text = "doc escala 10 conteudo teste ann deduplicacao memoria";
+    std::vector<float> dup_vec = stored[10];
+    std::uint64_t before = memory.size();
+    static_cast<void>(memory.remember(dup_text, dup_vec));
+    expect(memory.size() == before, "deduplicação exata impede crescimento em escala");
+    // Deduplicação semântica: texto idêntico + embedding quase idêntico deve deduplicar
+    std::vector<float> pert = dup_vec;
+    for (float& f : pert) f += 0.00005F;
+    cortex::normalize_in_place(pert);
+    std::uint64_t before2 = memory.size();
+    memory.remember(dup_text, pert);
+    expect(memory.size() == before2, "deduplicação semântica evita duplicata quase idêntica");
+    // Persistência em escala
+    const fs::path file = directory / "memory-scale.cmem";
+    memory.save(file);
+    auto loaded = cortex::LongTermMemory::load(file, dim);
+    expect(loaded.size() == memory.size(), "persistência em escala conserva contagem");
+    loaded.rebuild_index();
+    expect(loaded.ann_enabled(), "ANN reconstruído após load em escala");
+    auto loaded_hits = loaded.search(stored[probe], 3U);
+    expect(!loaded_hits.empty(), "busca após load em escala retorna hits");
+    // Remoção em escala
+    auto all = loaded.search(stored[0], 1U);
+    expect(!all.empty(), "busca encontra primeiro doc antes da remoção em escala");
+    std::uint64_t to_erase = all.front().id;
+    bool erased = loaded.erase(to_erase);
+    expect(erased && loaded.size() == memory.size() - 1U, "remoção em escala atualiza tamanho");
+    // Candidatos ANN devem ser razoáveis (< N mas > 0)
+    std::size_t cand = loaded.ann_candidate_count(stored[100]);
+    expect(cand > 0U && cand < loaded.size(), "ANN retorna subconjunto de candidatos em escala");
+}
+
 } // namespace
 
 void test_executable_resolution(const fs::path& directory) {
@@ -1116,6 +1193,7 @@ int main(int argc, char** argv) {
         test_native_reasoner();
         test_embedded_web_interface();
         test_long_term_memory(directory);
+        test_ann_scale_and_dedup(directory);
         fs::remove_all(directory);
         std::cout << "OK — " << passed << " verificações passaram.\n";
         return 0;

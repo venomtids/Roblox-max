@@ -669,33 +669,36 @@ std::vector<float> NeuralLanguageModel::sentence_embedding(
 void NeuralLanguageModel::save(const std::filesystem::path& path) const {
     const std::filesystem::path temporary = temporary_path_for(path);
     try {
-        BinaryWriter writer(temporary);
-        writer.magic(model_magic);
-        writer.u32(static_cast<std::uint32_t>(config_.vocabulary_size));
-        writer.u32(static_cast<std::uint32_t>(config_.embedding_size));
-        writer.u32(static_cast<std::uint32_t>(config_.hidden_size));
-        writer.u32(static_cast<std::uint32_t>(config_.layer_count));
-        writer.u64(config_.seed);
-        writer.u64(optimizer_step_);
+        {
+            BinaryWriter writer(temporary);
+            writer.magic(model_magic);
+            writer.u32(static_cast<std::uint32_t>(config_.vocabulary_size));
+            writer.u32(static_cast<std::uint32_t>(config_.embedding_size));
+            writer.u32(static_cast<std::uint32_t>(config_.hidden_size));
+            writer.u32(static_cast<std::uint32_t>(config_.layer_count));
+            writer.u64(config_.seed);
+            writer.u64(optimizer_step_);
 
-        const std::vector<const Parameter*> all = parameters();
-        writer.u32(static_cast<std::uint32_t>(all.size()));
-        for (const Parameter* parameter : all) {
-            writer.string(parameter->name);
-            writer.u32(static_cast<std::uint32_t>(parameter->value.rows()));
-            writer.u32(static_cast<std::uint32_t>(parameter->value.columns()));
-            writer.u64(static_cast<std::uint64_t>(parameter->size()));
-            for (const float value : parameter->value.values()) {
-                writer.f32(value);
+            const std::vector<const Parameter*> all = parameters();
+            writer.u32(static_cast<std::uint32_t>(all.size()));
+            for (const Parameter* parameter : all) {
+                writer.string(parameter->name);
+                writer.u32(static_cast<std::uint32_t>(parameter->value.rows()));
+                writer.u32(static_cast<std::uint32_t>(parameter->value.columns()));
+                writer.u64(static_cast<std::uint64_t>(parameter->size()));
+                for (const float value : parameter->value.values()) {
+                    writer.f32(value);
+                }
+                for (const float value : parameter->first_moment) {
+                    writer.f32(value);
+                }
+                for (const float value : parameter->second_moment) {
+                    writer.f32(value);
+                }
             }
-            for (const float value : parameter->first_moment) {
-                writer.f32(value);
-            }
-            for (const float value : parameter->second_moment) {
-                writer.f32(value);
-            }
+            writer.flush();
+            writer.close();
         }
-        writer.flush();
         replace_file(temporary, path);
     } catch (...) {
         std::filesystem::remove(temporary);

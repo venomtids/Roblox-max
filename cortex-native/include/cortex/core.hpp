@@ -209,6 +209,7 @@ public:
     void f32(float value);
     void string(std::string_view value);
     void flush();
+    void close();
 
 private:
     std::ofstream stream_;

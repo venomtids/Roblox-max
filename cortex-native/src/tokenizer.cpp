@@ -188,15 +188,18 @@ std::string BpeTokenizer::decode(std::span<const TokenId> tokens,
 void BpeTokenizer::save(const std::filesystem::path& path) const {
     const std::filesystem::path temporary = temporary_path_for(path);
     try {
-        BinaryWriter writer(temporary);
-        writer.magic(tokenizer_magic);
-        writer.u32(static_cast<std::uint32_t>(merges_.size()));
-        for (const Merge& merge : merges_) {
-            writer.u32(merge.left);
-            writer.u32(merge.right);
-            writer.u32(merge.result);
+        {
+            BinaryWriter writer(temporary);
+            writer.magic(tokenizer_magic);
+            writer.u32(static_cast<std::uint32_t>(merges_.size()));
+            for (const Merge& merge : merges_) {
+                writer.u32(merge.left);
+                writer.u32(merge.right);
+                writer.u32(merge.result);
+            }
+            writer.flush();
+            writer.close();
         }
-        writer.flush();
         replace_file(temporary, path);
     } catch (...) {
         std::filesystem::remove(temporary);
