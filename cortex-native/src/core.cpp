@@ -430,47 +430,57 @@ void replace_file(const std::filesystem::path& temporary,
     // MinGW/Windows pode recusar std::filesystem::rename quando o destino existe
     // ou quando o handle ainda não foi liberado (antivírus, indexer ou handle
     // ainda aberto). O arquivo temporário já foi fechado antes de chegar aqui,
-    // mas o SO pode manter o destino bloqueado por um instante.
-    // Tenta MoveFileEx com retry e backoff para ERROR_ACCESS_DENIED (5) e
-    // ERROR_SHARING_VIOLATION (32), que são os dois erros observados no CI.
-    for (int attempt = 0; attempt < 6; ++attempt) {
-        if (::MoveFileExW(temporary.wstring().c_str(), target.wstring().c_str(),
+    // mas o SO pode manter o destino bloqueado por um instante (Defender).
+    // Trata ERROR_ACCESS_DENIED (5) e ERROR_SHARING_VIOLATION (32) com retry
+    // exponencial e tenta ReplaceFileW / CopyFileW como fallback.
+    const auto wtmp = temporary.wstring();
+    const auto wtgt = target.wstring();
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        if (::MoveFileExW(wtmp.c_str(), wtgt.c_str(),
                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
             return;
         }
         error = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
         if (error.value() != 5 && error.value() != 32) {
+            // Erro diferente: tenta ReplaceFileW antes de desistir
+            if (::ReplaceFileW(wtgt.c_str(), wtmp.c_str(), nullptr, REPLACEFILE_WRITE_THROUGH,
+                               nullptr, nullptr) != 0) {
+                // ReplaceFileW moveu temp para target e criou backup nulo
+                return;
+            }
             break;
         }
-        // Pequeno backoff: libera o handle e tenta remover o destino na penúltima tentativa
-        std::this_thread::sleep_for(std::chrono::milliseconds(30 * (attempt + 1)));
-        if (attempt == 3) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50 * (attempt + 1)));
+        // Na metade das tentativas, tenta remover o destino se ele estiver travado
+        if (attempt == 4 || attempt == 7) {
             std::error_code remove_error;
             std::filesystem::remove(target, remove_error);
             if (!remove_error) {
                 std::filesystem::rename(temporary, target, error);
                 if (!error) return;
+                if (::MoveFileExW(wtmp.c_str(), wtgt.c_str(),
+                                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+                    return;
+                }
             }
         }
     }
-    // Última tentativa: tenta remover e mover com API nativa mais permissiva
-    {
-        std::error_code remove_error;
-        std::filesystem::remove(target, remove_error);
-        if (!remove_error) {
-            std::filesystem::rename(temporary, target, error);
-            if (!error) return;
-        }
-        if (::MoveFileExW(temporary.wstring().c_str(), target.wstring().c_str(),
-                          MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
-            return;
-        }
-        error = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
+    // Fallback final: CopyFileW + Delete
+    if (::CopyFileW(wtmp.c_str(), wtgt.c_str(), FALSE) != 0) {
+        std::error_code rem;
+        std::filesystem::remove(temporary, rem);
+        return;
+    }
+    error = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
+    // Tenta ReplaceFileW uma última vez antes de falhar
+    if (::ReplaceFileW(wtgt.c_str(), wtmp.c_str(), nullptr, REPLACEFILE_WRITE_THROUGH,
+                       nullptr, nullptr) != 0) {
+        return;
     }
 #endif
     std::filesystem::remove(temporary);
-    throw Error("não foi possível publicar arquivo persistido sem apagar o original: "
-                + error.message());
+    throw Error("não foi possível publicar '" + temporary.string() + "' -> '" + target.string()
+                + "': " + error.message() + " (" + std::to_string(error.value()) + ")");
 }
 
 } // namespace cortex
