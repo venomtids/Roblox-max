@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ══════════════════════════════════════════════════════════════════════
+   ROBLOX-MAX · folha de estilo base
+   O Tailwind cobre 95% da UI; aqui ficam só os detalhes que utilitário
+   não resolve bem: crosshair, scrollbar, sliders e o "chrome" gamer.
+   ══════════════════════════════════════════════════════════════════════ */
+
+@layer base {
+  html, body { height: 100%; overscroll-behavior: none; }
+  body { -webkit-font-smoothing: antialiased; text-rendering: optimizeSpeed; }
+  canvas { display: block; touch-action: none; }
+  ::selection { background: #39ff8844; }
+}
+
+@layer components {
+  /* ── Crosshair ───────────────────────────────────────────────────── */
+  .crosshair {
+    position: fixed; left: 50%; top: 50%; width: 22px; height: 22px;
+    margin: -11px 0 0 -11px; pointer-events: none; z-index: 21; opacity: .9;
+  }
+  .crosshair::before, .crosshair::after {
+    content: ''; position: absolute; background: #e8fff4;
+    box-shadow: 0 0 6px rgba(0, 0, 0, .9);
+  }
+  .crosshair::before { left: 50%; top: 0; width: 2px; height: 100%; margin-left: -1px; }
+  .crosshair::after  { top: 50%; left: 0; height: 2px; width: 100%; margin-top: -1px; }
+  .crosshair.hit::before, .crosshair.hit::after { background: #39ff88; }
+
+  /* ── Painéis de vidro ────────────────────────────────────────────── */
+  .panel {
+    background: linear-gradient(180deg, rgba(12,17,28,.92), rgba(8,11,19,.88));
+    border: 1px solid #1e2a44; border-radius: 14px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.55);
+    backdrop-filter: blur(9px);
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: .35rem;
+    padding: .18rem .55rem; border-radius: 999px;
+    border: 1px solid #1e2a44; background: rgba(0,0,0,.35);
+    font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+  }
+  .btn {
+    border-radius: 10px; border: 1px solid #1e2a44; background: rgba(255,255,255,.04);
+    padding: .45rem .8rem; font-size: 12px; letter-spacing: .04em; text-transform: uppercase;
+    transition: .15s ease; cursor: pointer;
+  }
+  .btn:hover { background: rgba(57,255,136,.12); border-color: #39ff8866; }
+  .btn.primary { background: linear-gradient(90deg, #39ff88, #37c6ff); color: #04120b; border: 0; font-weight: 700; }
+  .btn.primary:hover { filter: brightness(1.1); }
+  .btn.danger:hover { background: rgba(255,77,109,.15); border-color: #ff4d6d66; }
+
+  /* ── Slots da hotbar ─────────────────────────────────────────────── */
+  .slot {
+    position: relative; width: 52px; height: 52px; border-radius: 10px;
+    border: 1px solid #223055; background: rgba(6,9,16,.72);
+    display: grid; place-items: center; transition: .12s ease;
+  }
+  .slot[data-active="true"] { border-color: #39ff88; box-shadow: 0 0 16px rgba(57,255,136,.35); transform: translateY(-4px); }
+  .slot .sw { width: 30px; height: 30px; border-radius: 6px; box-shadow: inset 0 -8px 14px rgba(0,0,0,.45); }
+  .slot .kb { position: absolute; top: 3px; left: 5px; font: 700 9px/1 'JetBrains Mono', monospace; color: #7f90b5; }
+
+  /* ── Slider ──────────────────────────────────────────────────────── */
+  input[type="range"] { -webkit-appearance: none; width: 100%; height: 4px; border-radius: 999px; background: #1e2a44; }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+    background: #39ff88; box-shadow: 0 0 10px #39ff8899; cursor: pointer;
+  }
+
+  /* ── Scrollbar ───────────────────────────────────────────────────── */
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-track { background: #0a0e18; }
+  ::-webkit-scrollbar-thumb { background: #223055; border-radius: 9px; }
+  ::-webkit-scrollbar-thumb:hover { background: #39ff8866; }
+}
+
+/* ── Mobile: alvos maiores ─────────────────────────────────────────── */
+@media (pointer: coarse) {
+  .slot { width: 44px; height: 44px; }
+  .crosshair { width: 28px; height: 28px; margin: -14px 0 0 -14px; }
+}

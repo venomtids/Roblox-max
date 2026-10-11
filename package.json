@@ -1,0 +1,30 @@
+{
+  "name": "roblox-max",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Roblox-Max — Plataforma de jogos 3D voxel no navegador (WebGPU + WASM SIMD + Multithreading)",
+  "scripts": {
+    "wasm": "npm run wasm:shared && npm run wasm:plain && node tools/wasm-info.mjs",
+    "wasm:dbg": "asc assembly/index.ts --outFile public/wasm/core.wasm --debug --enable simd --enable threads --importMemory --sharedMemory --maximumMemory 512 --runtime stub --exportRuntime",
+    "prebuild": "npm run wasm",
+    "build": "vite build",
+    "start": "npm run wasm && vite --host 0.0.0.0 --port 5173",
+    "preview": "vite preview --host 0.0.0.0 --port 4173",
+    "typecheck": "tsc --noEmit",
+    "test:core": "esbuild tools/harness.ts --bundle --format=esm --platform=node --target=node20 --outfile=tools/.build/harness.mjs --log-level=warning && node tools/.build/harness.mjs",
+    "bench": "esbuild tools/harness.ts --bundle --format=esm --platform=node --target=node20 --outfile=tools/.build/harness.mjs --log-level=warning && node tools/.build/harness.mjs",
+    "verify": "npm run wasm && npx tsc --noEmit && npm run test:core && npx vite build",
+    "wasm:shared": "asc assembly/index.ts --optimize --shrinkLevel 1 --noAssert --enable simd --enable bulk-memory --runtime stub --exportRuntime --importMemory --maximumMemory 512 --enable threads --sharedMemory --outFile public/wasm/core.wasm",
+    "wasm:plain": "asc assembly/index.ts --optimize --shrinkLevel 1 --noAssert --enable simd --enable bulk-memory --runtime stub --exportRuntime --importMemory --maximumMemory 512 --outFile public/wasm/core-noshared.wasm"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.74",
+    "assemblyscript": "^0.27.31",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}
