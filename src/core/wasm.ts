@@ -47,6 +47,25 @@ export interface Core {
 export const WASM_SHARED = '/wasm/core.wasm';         // threads + shared memory
 export const WASM_PLAIN = '/wasm/core-noshared.wasm'; // single-thread seguro
 
+/** Overrides injetados pelo build de arquivo único (data: URLs do WASM). */
+interface WasmOverrides { shared?: string; plain?: string }
+
+/**
+ * Escolhe o binário correto em runtime.
+ *  1) `globalThis.__VX_WASM__` (build de arquivo único: data: URLs em base64)
+ *  2) caminhos servidos pelo HTTP (padrão)
+ */
+export function resolveWasmUrl(shared: boolean): string {
+  const custom = (globalThis as unknown as { __VX_WASM__?: WasmOverrides }).__VX_WASM__;
+  if (custom) return (shared ? custom.shared : custom.plain) ?? (shared ? custom.plain : custom.shared) ?? WASM_SHARED;
+  return shared ? WASM_SHARED : WASM_PLAIN;
+}
+
+/** O host proibiu threads explicitamente (build de arquivo único em file://). */
+export function threadsForcedOff(): boolean {
+  return (globalThis as unknown as { __VX_FORCE_SINGLE_THREAD__?: boolean }).__VX_FORCE_SINGLE_THREAD__ === true;
+}
+
 const cache = new Map<string, Promise<ArrayBuffer>>();
 
 function fetchWasm(url: string): Promise<ArrayBuffer> {
@@ -68,7 +87,7 @@ function fetchWasm(url: string): Promise<ArrayBuffer> {
  * @param url    caminho do .wasm (default /wasm/core.wasm)
  */
 export async function instantiateCore(world: SharedWorld, url?: string): Promise<Core> {
-  const src = url ?? (world.isShared ? WASM_SHARED : WASM_PLAIN);
+  const src = url ?? resolveWasmUrl(world.isShared);
   const bytes = await fetchWasm(src);
 
   const importObject: WebAssembly.Imports = {

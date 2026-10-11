@@ -14,9 +14,11 @@
     "typecheck": "tsc --noEmit",
     "test:core": "esbuild tools/harness.ts --bundle --format=esm --platform=node --target=node20 --outfile=tools/.build/harness.mjs --log-level=warning && node tools/.build/harness.mjs",
     "bench": "esbuild tools/harness.ts --bundle --format=esm --platform=node --target=node20 --outfile=tools/.build/harness.mjs --log-level=warning && node tools/.build/harness.mjs",
-    "verify": "npm run wasm && npx tsc --noEmit && npm run test:core && npx vite build",
+    "verify": "npm run wasm && npx tsc --noEmit && npm run test:core && npx vite build && npm run build:standalone && npm run test:standalone",
     "wasm:shared": "asc assembly/index.ts --optimize --shrinkLevel 1 --noAssert --enable simd --enable bulk-memory --runtime stub --exportRuntime --importMemory --maximumMemory 512 --enable threads --sharedMemory --outFile public/wasm/core.wasm",
-    "wasm:plain": "asc assembly/index.ts --optimize --shrinkLevel 1 --noAssert --enable simd --enable bulk-memory --runtime stub --exportRuntime --importMemory --maximumMemory 512 --outFile public/wasm/core-noshared.wasm"
+    "wasm:plain": "asc assembly/index.ts --optimize --shrinkLevel 1 --noAssert --enable simd --enable bulk-memory --runtime stub --exportRuntime --importMemory --maximumMemory 512 --outFile public/wasm/core-noshared.wasm",
+    "build:standalone": "npm run wasm && node tools/build-standalone.mjs",
+    "test:standalone": "esbuild tools/standalone-check.ts --bundle --format=esm --platform=node --target=node20 --outfile=tools/.build/standalone-check.mjs --log-level=warning && node tools/.build/standalone-check.mjs"
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.74",

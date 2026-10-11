@@ -18,7 +18,7 @@ import {
   C_PHYS_TICK, C_PHYS_DONE, C_PHYS_DT, C_EDIT_EPOCH, C_EDIT_X, C_EDIT_Y, C_EDIT_Z,
   chunkIndex, LAYOUT, W_CHUNKS_X, W_CHUNKS_Y, W_CHUNKS_Z, PHYS_SCALE,
 } from '../core/memory';
-import { instantiateCore, WASM_SHARED, WASM_PLAIN, type Core } from '../core/wasm';
+import { instantiateCore, resolveWasmUrl, threadsForcedOff, WASM_SHARED, type Core } from '../core/wasm';
 import { ChunkPool } from '../world/chunkPool';
 import { buildAtlas } from '../render/atlas';
 import { Renderer, type CameraState, type ChunkBuffer } from '../render/renderer';
@@ -125,7 +125,7 @@ export class Engine {
   private lastNow = 0;
   private hooks: EngineHooks;
   /** Build do núcleo em uso (compartilhado ou single-thread). */
-  wasmUrl = WASM_SHARED;
+  wasmUrl: string = WASM_SHARED;
   /** Handler do HUD (definido após a criação da interface, que depende da engine). */
   onHud: ((info: HudInfo) => void) | null = null;
 
@@ -159,12 +159,12 @@ export class Engine {
 
     eng.world = SharedWorld.create(seed);
     eng.core = await instantiateCore(eng.world);
-    eng.wasmUrl = eng.world.isShared ? WASM_SHARED : WASM_PLAIN;
+    eng.wasmUrl = resolveWasmUrl(eng.world.isShared);
     const simd = detectSimd();
     hooks.stage('WASM SIMD', simd ? 'ok' : 'warn', simd ? 'v128/i8x16 ativos' : 'sem SIMD — fallback escalar');
 
     // ── 3. Workers (com fallback gracioso) ──────────────────────────────
-    const threads = typeof Worker !== 'undefined' && crossOrigin;
+    const threads = typeof Worker !== 'undefined' && crossOrigin && !threadsForcedOff();
     if (threads) {
       try {
         eng.pool = new ChunkPool(eng.world, {

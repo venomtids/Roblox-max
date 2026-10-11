@@ -17,7 +17,24 @@ Tailwind CSS                        ← HUD gamer responsiva
 ### Opção A — pelo preview desta sessão (nada para instalar)
 O servidor já está no ar (Vite, porta 5173) com os headers `COOP/COEP` necessários para multithreading. Abra o preview, espere a barra de progresso (≈1–2 s) e clique em **▶ JOGAR**.
 
-### Opção B — na sua máquina
+### Opção B — um arquivo só, duplo clique (não precisa de Node!)
+Baixe **`roblox-max.html`** (117 KB) direto do link na tela inicial, ou de
+[`public/downloads/roblox-max.html`](public/downloads/roblox-max.html), ou pelo preview
+em `/downloads/roblox-max.html`. Dê **duplo clique** no arquivo: o jogo abre no navegador
+sem servidor, sem instalação, sem internet.
+
+Essa versão é 100% autocontida (WASM embutido em `data:` base64, CSS inline, bundle IIFE —
+nenhum request de rede). Em `file://` o navegador não permite `SharedArrayBuffer`, então ela
+usa o núcleo `core-noshared.wasm` e gera o mundo na main thread (fatiado por frame): a
+abertura leva ~2–4 s em vez de ~1 s. **Para multithreading real, use a versão web** (Opção A/C).
+
+Gerar o seu próprio arquivo único:
+
+```bash
+npm run build:standalone   # → public/downloads/roblox-max.html
+```
+
+### Opção C — na sua máquina (desenvolvimento)
 Você **não precisa** de Node para *jogar*: o site é estático. Mas para *buildar/rodar localmente*:
 
 ```bash
@@ -34,7 +51,8 @@ npm start            # → http://localhost:5173
 npm run build        # build de produção em dist/ (sirva com COOP/COEP)
 npm run preview      # serve o build de produção
 npm run verify       # wasm + typecheck + 22 testes do núcleo + build
-npm run test:core    # só o harness de validação (Node puro, sem navegador)
+npm run test:core         # só o harness de validação (Node puro, sem navegador)
+npm run build:standalone  # gera o arquivo único autônomo (117 KB)
 ```
 
 > ⚠️ **Servidor sem COOP/COEP?** Sem os headers `Cross-Origin-Opener-Policy: same-origin` e
