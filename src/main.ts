@@ -15,6 +15,7 @@
 import './style.css';
 import { Engine, DEFAULT_SETTINGS } from './game/engine';
 import { Hud } from './ui/hud';
+import { diagnose, suggestQuality, type BrowserReport } from './game/browser-support';
 
 const boot = document.getElementById('boot')!;
 const bootSteps = document.getElementById('boot-steps')!;
@@ -72,37 +73,52 @@ function showFatal(message: string, help?: string): void {
   `;
 }
 
-// ── Checagens rápidas ANTES de tocar em WebGPU ───────────────────────────
-const envChecks = () => {
-  const hasGpu = 'gpu' in navigator;
-  stage('Navegador compatível', hasGpu ? 'ok' : 'fail', navigator.userAgent.split(') ')[0].slice(0, 60));
-  if (!hasGpu) {
-    showFatal('Seu navegador não expõe a API WebGPU (navigator.gpu).');
-    return false;
+/**
+ * Checagem de ambiente + diagnóstico do navegador ANTES de tocar em WebGPU.
+ * Cada item ruim vem com a instrução exata de como resolver (por navegador):
+ * é a diferença entre "não funciona" e "ligue esta opção e recarregue".
+ */
+function envChecks(): BrowserReport {
+  const report = diagnose();
+  document.title = `ROBLOX-MAX · ${report.browserName}`;
+
+  for (const item of report.items) {
+    stage(item.label, item.ok ? 'ok' : item.critical ? 'fail' : 'warn', item.detail);
+    if (!item.ok && item.fix) {
+      const help = document.createElement('div');
+      help.className = 'ml-7 mb-1 rounded-lg border border-vx-warn/40 bg-vx-warn/5 p-2 font-mono text-[11px] leading-relaxed text-vx-warn/90';
+      help.textContent = `→ ${item.fix}`;
+      bootSteps.appendChild(help);
+    }
   }
-  const crossOrigin = (globalThis as unknown as { crossOriginIsolated?: boolean }).crossOriginIsolated === true;
-  stage('Isolamento de origem (COOP/COEP)', crossOrigin ? 'ok' : 'warn',
-    crossOrigin ? 'SharedArrayBuffer disponível' : 'sem SAB — modo single-thread');
-  stage('Núcleos lógicos', 'ok', `${navigator.hardwareConcurrency || '?'} CPUs`);
-  badge('WebGPU', 'disponível');
-  badge('Núcleos', String(navigator.hardwareConcurrency || '?'));
-  badge('SAB', crossOrigin ? 'ativo' : 'limitado', crossOrigin ? 'accent' : 'warn');
-  badge('Plataforma', navigator.platform || 'web');
-  return true;
-};
+
+  badge('Navegador', report.browserName);
+  badge('WebGPU', report.webgpu ? 'disponível' : 'ausente', report.webgpu ? 'accent' : 'fail');
+  badge('Threads', report.sab && report.isolated ? `${Math.max(1, report.cores - 1)} núcleos` : 'single-thread',
+        report.sab && report.isolated ? 'accent' : 'warn');
+  badge('Núcleos / RAM', `${report.cores}${report.deviceMemoryGB ? ' / ' + report.deviceMemoryGB + 'GB' : ''}`);
+
+  if (report.blocked) {
+    showFatal(report.summary, report.items.find((i) => i.critical && !i.ok)?.fix
+      ?.split('  ·  ').map((line) => `<div>• ${line}</div>`).join(''));
+  }
+  return report;
+}
 
 async function run(): Promise<void> {
-  if (!envChecks()) return;
+  const report = envChecks();
+  if (report.blocked) return;
   const canvas = document.getElementById('gl') as HTMLCanvasElement;
+  const quality = suggestQuality(report);
 
   try {
-    progress(0.02, 'Criando engine…');
+    progress(0.02, `Criando engine · perfil ${quality.tier}…`);
     const engine = await Engine.create(canvas, {
       stage,
       progress,
       ready: () => { /* apenas o contrato */ },
       fatal: showFatal,
-    }, 20261011);
+    }, 20261011, quality);
 
     progress(0.12, 'Preparando o mundo…');
     await engine.loadWorld();
@@ -112,6 +128,7 @@ async function run(): Promise<void> {
     engine.onHud = (info) => hud.update(info);
 
     badge('Workers', String(engine.workers));
+    badge('Perfil', `${quality.tier} · MSAA ${quality.msaa}× · ${quality.renderScale.toFixed(2)}×`, quality.tier === 'alto' ? 'accent' : 'warn');
     badge('Compilação', `${engine.buildMs.toFixed(0)} ms`);
 
     engine.start();

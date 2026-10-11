@@ -16,6 +16,7 @@
 
 import type { Engine, HudInfo } from '../game/engine';
 import { HOTBAR } from '../game/engine';
+import { diagnose } from '../game/browser-support';
 
 export class Hud {
   private root: HTMLElement;
@@ -99,7 +100,9 @@ export class Hud {
             <button id="menu-cube" class="btn">Soltar peça (G)</button>
             <button id="menu-boom" class="btn danger">Explosão (E)</button>
             <button id="menu-night" class="btn">Alternar dia/noite</button>
+            <button id="menu-diag" class="btn">Diagnóstico do navegador</button>
           </div>
+          <div id="menu-diag-panel" class="mt-4 hidden rounded-lg border border-vx-line bg-black/40 p-4 text-[12px] leading-relaxed"></div>
           <div class="mt-5 rounded-lg border border-vx-line bg-black/40 p-3 font-mono text-[11px] text-slate-400">
             <div>Dica: clique na tela para capturar o mouse (pointer lock).</div>
             <div>F3 esconde a telemetria · render scale &lt; 1.0 ajuda em GPUs integradas.</div>
@@ -167,6 +170,7 @@ export class Hud {
     on('menu-cube', () => this.engine.action('spawnCube'));
     on('menu-boom', () => this.engine.action('explode'));
     on('menu-night', () => { this.engine.settings.daySpeed = this.engine.settings.daySpeed > 0 ? 0 : 1 / 30; });
+    on('menu-diag', () => this.toggleDiagnosis());
 
     this.nodes = {
       fps: document.getElementById('hud-fps')!,
@@ -213,6 +217,39 @@ export class Hud {
     });
   }
 
+  /**
+   * Diagnóstico sob demanda: mostra exatamente o que está ativo, o que falta
+   * e COMO resolver em cada navegador (Brave/Opera têm armadilhas próprias).
+   */
+  private toggleDiagnosis(): void {
+    const panel = document.getElementById('menu-diag-panel')!;
+    if (panel.dataset.open === '1') { panel.dataset.open = '0'; panel.classList.add('hidden'); return; }
+    const r = diagnose();
+    const fps = this.lastFps.toFixed(0);
+    panel.innerHTML = `
+      <div class="mb-2 font-bold tracking-widest text-slate-200">DIAGNÓSTICO · ${r.browserName}</div>
+      ${r.items.map((i) => `
+        <div class="flex items-start gap-2 py-1 border-b border-vx-line/50">
+          <span>${i.ok ? '✅' : i.critical ? '⛔' : '⚠️'}</span>
+          <div class="flex-1">
+            <div class="text-slate-200">${i.label} <span class="text-slate-500">— ${i.detail}</span></div>
+            ${i.fix ? `<div class="mt-1 text-vx-warn/90 font-mono text-[11px]">→ ${i.fix}</div>` : ''}
+          </div>
+        </div>`).join('')}
+      <div class="mt-3 grid grid-cols-2 gap-2 font-mono text-[11px] text-slate-400">
+        <div>resolução: <b class="text-slate-200">${this.engine.canvasWidth()}×${this.engine.canvasHeight()}</b> (escala ${this.engine.settings.renderScale.toFixed(2)}×)</div>
+        <div>FPS atual: <b class="text-slate-200">${fps}</b> · FOV <b class="text-slate-200">${this.engine.settings.fov}°</b></div>
+        <div>alcance: <b class="text-slate-200">${this.engine.settings.viewDistance} blocos</b></div>
+        <div>peças: <b class="text-slate-200">${this.engine.settings.bodyCount}</b></div>
+      </div>
+      <div class="mt-3 text-slate-500">
+        Se o FPS estiver baixo: reduza a <b>escala de renderização</b> para 0.7 e o
+        <b>alcance</b> para 160 — são os dois controles que mais pesam.
+      </div>`;
+    panel.dataset.open = '1';
+    panel.classList.remove('hidden');
+  }
+
   private syncHotbar(): void {
     const bar = document.getElementById('hud-hotbar')!;
     bar.querySelectorAll<HTMLElement>('.slot').forEach((el, i) => {
@@ -240,10 +277,12 @@ export class Hud {
     this.toastTimer = setTimeout(() => { this.nodes.toast.style.opacity = '0'; }, 1400);
   }
   private toastTimer: number | undefined;
+  private lastFps = 0;
 
   /** Atualização periódica (chamada pela engine a 5 Hz). */
   update(info: HudInfo): void {
     const f = this.nodes;
+    this.lastFps = info.fps;
     f.fps.textContent = `${info.fps.toFixed(0)} FPS`;
     f.fps.className = 'chip ' + (info.fps >= 55 ? 'border-vx-accent/50 text-vx-accent'
       : info.fps >= 30 ? 'border-vx-warn/50 text-vx-warn' : 'border-vx-danger/60 text-vx-danger');

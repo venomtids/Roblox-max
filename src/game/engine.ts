@@ -25,6 +25,7 @@ import { Renderer, type CameraState, type ChunkBuffer } from '../render/renderer
 import { Player, PLAYER_HALF, PLAYER_HEIGHT, type PlayerInput } from './player';
 import { Input } from './input';
 import { clamp } from '../core/math';
+import type { QualityProfile } from './browser-support';
 
 export interface HotbarItem { id: number; name: string; color: string; key: string }
 
@@ -124,6 +125,7 @@ export class Engine {
   private raf = 0;
   private lastNow = 0;
   private hooks: EngineHooks;
+  private canvasEl!: HTMLCanvasElement;
   /** Build do núcleo em uso (compartilhado ou single-thread). */
   wasmUrl: string = WASM_SHARED;
   /** Handler do HUD (definido após a criação da interface, que depende da engine). */
@@ -132,8 +134,16 @@ export class Engine {
   private constructor(hooks: EngineHooks) { this.hooks = hooks; }
 
   // ═════════════════════════ BOOT ═════════════════════════════════════════
-  static async create(canvas: HTMLCanvasElement, hooks: EngineHooks, seed = 1337): Promise<Engine> {
+  static async create(canvas: HTMLCanvasElement, hooks: EngineHooks, seed = 1337, quality?: QualityProfile): Promise<Engine> {
     const eng = new Engine(hooks);
+    eng.canvasEl = canvas;
+    if (quality) {
+      eng.settings.renderScale = quality.renderScale;
+      eng.settings.fov = quality.fov;
+      eng.settings.viewDistance = quality.viewDistance;
+      eng.settings.bodyCount = quality.bodyCount;
+      eng.settings.daySpeed = quality.daySpeed;
+    }
     const t0 = performance.now();
 
     // ── 1. WebGPU ───────────────────────────────────────────────────────
@@ -184,9 +194,25 @@ export class Engine {
     }
 
     // ── 4. GPU: pipelines + atlas procedural ────────────────────────────
+    // O MSAA é o ponto de falha mais comum entre GPUs: criamos o pipeline sob
+    // um "error scope" e, se a validação reprovar, caímos para 1× amostra em
+    // vez de mostrar tela de erro para o usuário.
     const atlasPixels = buildAtlas();
-    eng.renderer = new Renderer(canvas, device, atlasPixels, 4);
-    hooks.stage('Pipeline gráfico', 'ok', 'atlas procedural 18 camadas · MSAA 4×');
+    const wanted = quality?.msaa ?? 4;
+    device.pushErrorScope('validation');
+    let renderer = new Renderer(canvas, device, atlasPixels, wanted);
+    let msaaError = await device.popErrorScope();
+    if (msaaError) {
+      console.warn('[WebGPU] MSAA', wanted + '×', 'recusado:', msaaError.message);
+      device.pushErrorScope('validation');
+      renderer = new Renderer(canvas, device, atlasPixels, 1);
+      msaaError = await device.popErrorScope();
+      hooks.stage('Pipeline gráfico', 'warn', 'MSAA desativado (limite da GPU) — resto intacto');
+      if (msaaError) throw new Error(`Falha ao criar o pipeline gráfico: ${msaaError.message}`);
+    } else {
+      hooks.stage('Pipeline gráfico', 'ok', `atlas procedural 18 camadas · MSAA ${wanted}×`);
+    }
+    eng.renderer = renderer;
 
     eng.input = new Input(canvas);
     eng.scratch = LAYOUT.arenas + 8 * LAYOUT.arenaBytes - 512;   // 512 B no fim da última arena
@@ -565,6 +591,10 @@ export class Engine {
       default: break;
     }
   }
+
+  /** Dimensões reais do framebuffer (backing store) para o diagnóstico. */
+  canvasWidth(): number { return this.canvasEl.width; }
+  canvasHeight(): number { return this.canvasEl.height; }
 
   selectBlock(i: number): void { this.selected = clamp(i, 0, HOTBAR.length - 1) | 0; }
 
