@@ -21,7 +21,8 @@
     "test:standalone": "esbuild tools/standalone-check.ts --bundle --format=esm --platform=node --target=node20 --outfile=tools/.build/standalone-check.mjs --log-level=warning && node tools/.build/standalone-check.mjs",
     "linux:pub": "cp roblox-linux/roblox-linux.sh public/downloads/roblox-linux.sh && chmod +x public/downloads/roblox-linux.sh && node -e \"const s=require('fs').statSync('public/downloads/roblox-linux.sh');console.log('instalador publicado: public/downloads/roblox-linux.sh ('+Math.round(s.size/1024)+' KB)')\"",
     "test:linux": "bash roblox-linux/test.sh",
-    "verify:all": "npm run verify && npm run linux:pub && npm run test:linux"
+    "verify:all": "npm run verify && npm run test:install-hub && npm run linux:pub && npm run test:linux",
+    "test:install-hub": "esbuild tools/install-hub-check.ts --bundle --format=esm --platform=node --target=node20 --outfile=tools/.build/install-hub-check.mjs --log-level=warning && node tools/.build/install-hub-check.mjs"
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.74",

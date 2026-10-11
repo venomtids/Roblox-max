@@ -15,6 +15,7 @@
 import './style.css';
 import { Engine, DEFAULT_SETTINGS } from './game/engine';
 import { Hud } from './ui/hud';
+import { InstallHub } from './ui/install-hub';
 import { diagnose, suggestQuality, type BrowserReport } from './game/browser-support';
 
 const boot = document.getElementById('boot')!;
@@ -151,6 +152,13 @@ async function run(): Promise<void> {
     showFatal(e.message);
   }
 }
+
+// ── Central de Instalação: acessível desde o primeiro segundo ──────────────
+// (não depende de WebGPU: quem não tem GPU ainda precisa saber como instalar
+// o Roblox de verdade no próprio sistema — é o caminho oficial de cada SO.)
+const installHub = new InstallHub();
+document.getElementById('boot-install')?.addEventListener('click', () => installHub.open());
+(globalThis as unknown as { VX_INSTALL_HUB: InstallHub }).VX_INSTALL_HUB = installHub;
 
 // Exposto para depuração no console do navegador
 (globalThis as unknown as { VX_SETTINGS: typeof DEFAULT_SETTINGS }).VX_SETTINGS = DEFAULT_SETTINGS;

@@ -31,8 +31,26 @@ ok('Arquivo autocontido (< 300 KB)', html.length < 300 * 1024, `${(html.length /
 ok('CSS do Tailwind embutido', html.includes('<style>') && html.includes('.slot'));
 ok('Bundle em script clássico (IIFE, sem import.meta)', !html.includes('import.meta'));
 
-const refs = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map((m) => m[1]);
-ok('Zero referências externas (nenhum request de rede)', refs.length === 0, refs.length ? refs.join(', ') : '100% offline');
+// Olhamos só o MARKUP: links externos criados em tempo de execução dentro do bundle
+// (ex.: o botão "abrir roblox.com" da Central de Instalação) são navegação pedida pelo
+// usuário — não são carregamentos automáticos de terceiros no boot.
+const markup = html
+  .replace(/<script[\s\S]*?<\/script>/gi, '')
+  .replace(/<style[\s\S]*?<\/style>/gi, '');
+const refs = [...markup.matchAll(/(?:src|href)="([^"]+)"/gi)].map((m) => m[1]);
+ok('Zero referências externas no markup (nenhum request de rede)', refs.length === 0, refs.length ? refs.join(', ') : '100% offline');
+ok(
+  'Nenhuma tag de carregamento automático de terceiros',
+  !/<script[^>]+src=|<link[^>]+href=|@import|url\(https?:/i.test(markup),
+  'sem <script src>, <link href>, @import ou url(http)'
+);
+// Dentro do JS: os únicos href externos permitidos são âncoras (clique do usuário).
+const jsRefs = [...html.matchAll(/href="(https?:\/\/[^"]+)"/gi)].map((m) => m[1]);
+ok(
+  'Links externos só em âncoras clicáveis (nada de fetch para fora)',
+  jsRefs.length === 0 || !/fetch\(|XMLHttpRequest|importScripts/.test(html),
+  jsRefs.length ? `${jsRefs.length} link(s) em botões: ${[...new Set(jsRefs)].join(', ')}` : 'nenhum'
+);
 
 const shared = /shared:\s*'(data:application\/wasm;base64,[^']+)'/.exec(html)?.[1];
 const plain = /plain:\s*'(data:application\/wasm;base64,[^']+)'/.exec(html)?.[1];

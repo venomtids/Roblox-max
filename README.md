@@ -159,6 +159,22 @@ O que um clone completo do Roblox ainda pediria (em ordem de valor):
 
 ---
 
+## 🎯 "E o Roblox de verdade? Dá para instalar no navegador?"
+
+Curto e honesto: **não**. E o site agora explica isso item por item, com o caminho correto
+para o seu sistema — clique em **“⬇ instalar o ROBLOX de verdade”** na tela inicial.
+
+| Caminho | Linux roda? | Roblox roda? |
+|---|---|---|
+| Roblox nativo (Windows/macOS/Android/iOS) | — | ✅ oficial |
+| **Sober** em Linux real (script deste repo) | — | ✅ funciona (~93% do nativo) |
+| Wine/Proton | — | ❌ bloqueado pelo Hyperion desde 27/02/2024 |
+| **Linux (v86) dentro do navegador** | ✅ 32-bit | ❌ 32 vs 64 bits, sem GPU, ToS |
+| **Linux (WebVM/CheerpX) no navegador** | ✅ userland | ❌ sem kernel/GPU + licença |
+| Este projeto (motor próprio, WebGPU) | — | ➖ o *nosso* jogo roda |
+
+Análise completa dos quatro impedimentos: **[docs/POR-QUE-NAO-NA-VM.md](docs/POR-QUE-NAO-NA-VM.md)**
+
 ## 🐧 Roblox de verdade no Linux
 
 Este projeto é a **plataforma no navegador**. Para rodar o **Roblox oficial** no Linux

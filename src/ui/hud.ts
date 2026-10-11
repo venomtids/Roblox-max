@@ -17,6 +17,7 @@
 import type { Engine, HudInfo } from '../game/engine';
 import { HOTBAR } from '../game/engine';
 import { diagnose } from '../game/browser-support';
+import { InstallHub } from './install-hub';
 
 export class Hud {
   private root: HTMLElement;
@@ -101,6 +102,7 @@ export class Hud {
             <button id="menu-boom" class="btn danger">Explosão (E)</button>
             <button id="menu-night" class="btn">Alternar dia/noite</button>
             <button id="menu-diag" class="btn">Diagnóstico do navegador</button>
+            <button id="menu-install" class="btn primary">Instalar o Roblox de verdade</button>
           </div>
           <div id="menu-diag-panel" class="mt-4 hidden rounded-lg border border-vx-line bg-black/40 p-4 text-[12px] leading-relaxed"></div>
           <div class="mt-5 rounded-lg border border-vx-line bg-black/40 p-3 font-mono text-[11px] text-slate-400">
@@ -171,6 +173,7 @@ export class Hud {
     on('menu-boom', () => this.engine.action('explode'));
     on('menu-night', () => { this.engine.settings.daySpeed = this.engine.settings.daySpeed > 0 ? 0 : 1 / 30; });
     on('menu-diag', () => this.toggleDiagnosis());
+    on('menu-install', () => { this.toggleMenu(false); this.installHub.open(); });
 
     this.nodes = {
       fps: document.getElementById('hud-fps')!,
@@ -277,6 +280,8 @@ export class Hud {
     this.toastTimer = setTimeout(() => { this.nodes.toast.style.opacity = '0'; }, 1400);
   }
   private toastTimer: number | undefined;
+  /** Central de Instalação (compartilhada com a tela inicial). */
+  private installHub = new InstallHub();
   private lastFps = 0;
 
   /** Atualização periódica (chamada pela engine a 5 Hz). */
