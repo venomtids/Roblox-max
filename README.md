@@ -159,6 +159,24 @@ O que um clone completo do Roblox ainda pediria (em ordem de valor):
 
 ---
 
+## 🐧 Roblox de verdade no Linux
+
+Este projeto é a **plataforma no navegador**. Para rodar o **Roblox oficial** no Linux
+existe um companheiro neste repositório que instala o caminho que funciona em 2026
+(o runtime **Sober**, que executa o APK oficial do Roblox para Android):
+
+```bash
+./roblox-linux/roblox-linux.sh doctor    # diz o que falta no seu sistema
+./roblox-linux/roblox-linux.sh install   # Flatpak + Flathub + drivers + Sober
+```
+
+Guia completo, notas por distro e tabela de problemas: **[roblox-linux/README.md](roblox-linux/README.md)**
+Também disponível para download direto em `/downloads/roblox-linux.sh`.
+
+> Importante: **Wine/Proton/Vinegar estão mortos** para o Roblox Player desde 27/02/2024
+> (o anti-cheat Hyperion é Windows-only e não roda sob Wine). O caminho Android via Sober
+> é o único que funciona — e não há cliente oficial para Linux.
+
 ## 📄 Licença
 
 MIT — use, estude, publique. Feito com foco absoluto em performance de navegador.
