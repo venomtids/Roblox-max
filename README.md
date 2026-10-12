@@ -69,7 +69,7 @@ Anote a **origem** (somente `https://SEU_USUARIO.github.io`, sem caminho). Ela v
 2. Em **Environment**, configure:
    - `ACCESS_TOKEN` = o token gerado no passo 1 (o Blueprint pode gerar um automaticamente; copie-o do painel).
    - `ALLOWED_ORIGINS` = `https://SEU_USUARIO.github.io`
-3. Em **Instance type**, escolha um plano com **pelo menos 4 GB de RAM**. Planos gratuitos não comportam XFCE + Wine.
+3. Em **Instance type**, escolha o plano **Pro (4 GB de RAM)**. Starter e Standard têm memória insuficiente para XFCE + Wine.
 4. **Health Check Path**: `/health` (já definido no Blueprint).
 5. Deploy. Ao concluir, copie a URL pública, por exemplo `https://cloud-linux-desktop.onrender.com`.
 

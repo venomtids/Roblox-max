@@ -6,8 +6,8 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    # Use um plano com memória suficiente (recomendado >= 4 GB RAM). Planos gratuitos são insuficientes para XFCE + Wine.
-    plan: standard
+    # Plano Pro = 4 GB RAM (mínimo recomendado). Starter e Standard têm menos memória e não comportam XFCE + Wine.
+    plan: pro
     region: oregon
     healthCheckPath: /health
     autoDeploy: true
