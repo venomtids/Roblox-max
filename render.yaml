@@ -1,0 +1,23 @@
+# Render Blueprint: cria o serviço Docker a partir do Dockerfile deste repositório.
+# Docs: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: cloud-linux-desktop
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # Use um plano com memória suficiente (recomendado >= 4 GB RAM). Planos gratuitos são insuficientes para XFCE + Wine.
+    plan: standard
+    region: oregon
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: ACCESS_TOKEN
+        generateValue: true
+      - key: ALLOWED_ORIGINS
+        sync: false
+        # Preencha com a origem do GitHub Pages, ex.: https://SEU_USUARIO.github.io
+      - key: VNC_RESOLUTION
+        value: 1280x720
+      - key: ROBLOX_AUTOSTART
+        value: "0"

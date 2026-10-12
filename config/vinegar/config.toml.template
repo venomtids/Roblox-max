@@ -1,0 +1,22 @@
+# Configuração inicial do Vinegar (copiada para $XDG_CONFIG_HOME/vinegar/config.toml
+# na primeira inicialização do container). Caminho documentado em internal/dirs/dirs.go.
+#
+# Vinegar é um bootstrapper GTK4 em Go cujo escopo upstream é o Roblox Studio.
+# Ajuste as opções abaixo conforme o alvo que você executar via ROBLOX_LAUNCH_CMD.
+
+debug = false
+
+[studio]
+# Raiz do Wine instalada pelo Debian (contém bin/wine). Deve ser caminho absoluto.
+wineroot = "/usr"
+
+# DXVK usa Vulkan. Sem GPU, o Mesa lavapipe (CPU) é usado e o desempenho será baixo.
+renderer = "DXVK"
+
+# Desligados por padrão: gamemode e Discord RPC exigem binários/serviços adicionais no container.
+gamemode = false
+discord_rpc = false
+
+[studio.env]
+# Exemplo: forçar locale ou desativar sincronização de áudio.
+# LANG = "C.UTF-8"

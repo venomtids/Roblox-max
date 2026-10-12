@@ -1,0 +1,5 @@
+# Exemplo de proxy reverso com TLS automático para VPS (copie para /etc/caddy/Caddyfile).
+# Caddy encaminha WebSocket automaticamente.
+desktop.seudominio.com {
+    reverse_proxy 127.0.0.1:8080
+}

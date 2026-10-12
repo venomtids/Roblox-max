@@ -1,0 +1,25 @@
+# Execução em VPS (com TLS na frente via Caddy/Nginx). Defina ACCESS_TOKEN e ALLOWED_ORIGINS em .env.
+services:
+  desktop:
+    build: .
+    image: cloud-linux-desktop:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"   # exposto apenas ao proxy reverso local
+    environment:
+      PORT: "8080"
+      ACCESS_TOKEN: "${ACCESS_TOKEN:?defina ACCESS_TOKEN no .env}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-https://SEU_USUARIO.github.io}"
+      VNC_RESOLUTION: "${VNC_RESOLUTION:-1920x1080}"
+      ROBLOX_AUTOSTART: "${ROBLOX_AUTOSTART:-0}"
+      ROBLOX_LAUNCH_CMD: "${ROBLOX_LAUNCH_CMD:-vinegar}"
+    shm_size: "1gb"
+    volumes:
+      - desktop-home:/home/desktop   # prefixo do Wine, configuração do Vinegar e dados persistem aqui
+    deploy:
+      resources:
+        limits:
+          memory: 6g
+
+volumes:
+  desktop-home:

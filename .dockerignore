@@ -1,0 +1,11 @@
+.git
+.github
+docs
+node_modules
+npm-debug.log
+*.md
+.env
+.env.*
+Max-result
+Dockerfile
+.dockerignore
