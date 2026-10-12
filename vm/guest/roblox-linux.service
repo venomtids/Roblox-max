@@ -1,0 +1,21 @@
+[Unit]
+Description=Roblox Linux desktop (KasmVNC + Wine/Vinegar + gateway)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=desktop
+Group=desktop
+RuntimeDirectory=roblox-linux
+RuntimeDirectoryMode=0700
+# Executado como root (prefixo "+"): lê o token entregue pelo QEMU via fw_cfg.
+ExecStartPre=+/usr/local/sbin/roblox-fetch-token
+ExecStart=/usr/local/sbin/roblox-run
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

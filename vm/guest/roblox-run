@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Ponto de entrada do serviço roblox-linux.service (usuário "desktop").
+set -Eeuo pipefail
+
+ACCESS_TOKEN="$(tr -d '\r\n' < /run/roblox-linux/token)"
+[[ -n "$ACCESS_TOKEN" ]] || { echo "token vazio" >&2; exit 1; }
+export ACCESS_TOKEN
+
+export HOME=/home/desktop
+export PORT=8080
+export APP_DIR=/opt/roblox-linux/app
+export STATIC_DIR=/opt/roblox-linux/app/docs
+export VINEGAR_TEMPLATE=/etc/roblox-linux/vinegar-config.toml.template
+export VNC_RESOLUTION="${VNC_RESOLUTION:-1280x720}"
+export ROBLOX_AUTOSTART="${ROBLOX_AUTOSTART:-0}"
+
+exec bash /opt/roblox-linux/app/entrypoint.sh

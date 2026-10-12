@@ -17,12 +17,12 @@ mkdir -p "$ROOT/dist"
 rm -rf "$OUT" && mkdir -p "$OUT/app"
 # shellcheck disable=SC2086
 $ZIG cc -target x86_64-windows-gnu -Os -s -Wall -Wextra -Werror -Wno-unused-parameter \
-  "$ROOT/windows/RobloxLinux.c" -o "$OUT/RobloxLinux.exe" -luser32 -lshell32
+  "$ROOT/windows/RobloxLinux.c" -o "$OUT/RobloxLinux.exe" -luser32 -lshell32 -lws2_32
 
 echo "==> Montando app/"
 cp "$ROOT/server.js" "$ROOT/package.json" "$ROOT/package-lock.json" "$ROOT/entrypoint.sh" "$OUT/app/"
 cp -r "$ROOT/docs" "$OUT/app/docs"
-mkdir -p "$OUT/app/config/vinegar" "$OUT/app/wsl"
+mkdir -p "$OUT/app/config/vinegar" "$OUT/app/wsl" "$OUT/qemu" "$OUT/image"
 cp "$ROOT/config/vinegar/config.toml.template" "$OUT/app/config/vinegar/"
 cp "$ROOT/wsl/"*.sh "$OUT/app/wsl/"
 
@@ -48,6 +48,20 @@ pelo menos 20 GB livres e 8 GB de RAM (recomendado 16 GB).
 
 Outros comandos: status, uninstall.
 Os dados ficam dentro da distro "Debian" do WSL.
+
+MODO VM (alternativa ao WSL2)
+-----------------------------
+Requisitos extras: recurso "Windows Hypervisor Platform" ativado (Recursos do Windows),
+virtualização ativa na BIOS e os binários Windows do QEMU.
+
+1. Extraia os binários do QEMU para a pasta 'qemu' ao lado do RobloxLinux.exe
+   (precisa de qemu-system-x86_64.exe).
+2. Copie a imagem roblox-linux.qcow2 (gerada com vm/build-image.sh) para a pasta 'image'.
+3. Rode:
+     .\RobloxLinux.exe vm-install
+     .\RobloxLinux.exe vm-start     (abre http://localhost:8080)
+     .\RobloxLinux.exe vm-stop
+   Não use os dois modos ao mesmo tempo: ambos usam a porta 8080.
 
 Observação: o Roblox oficial não tem cliente Linux. O caminho aqui usa Wine e o
 Vinegar; o Vinegar, no upstream, é um bootstrapper voltado ao Roblox Studio.

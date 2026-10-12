@@ -1,0 +1,13 @@
+#!/bin/sh
+# Copia o token de acesso entregue pelo host (QEMU -fw_cfg name=opt/roblox/token)
+# para /run/roblox-linux/token, legível apenas pelo usuário "desktop".
+set -eu
+
+SRC=/sys/firmware/qemu_fw_cfg/by_name/opt/roblox/token/raw
+
+if [ ! -r "$SRC" ]; then
+  echo "roblox-fetch-token: token não encontrado em $SRC (a VM foi iniciada pelo RobloxLinux.exe?)" >&2
+  exit 1
+fi
+
+install -m 0600 -o desktop -g desktop "$SRC" /run/roblox-linux/token

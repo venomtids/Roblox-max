@@ -227,3 +227,30 @@ Saída: `dist/RobloxLinux-windows.zip` (≈220 KB). Dentro do zip, no Windows, r
 Arquivos: `windows/RobloxLinux.c` (lançador Win32 em C puro), `windows/build.sh` (cross-compilação com Zig), `wsl/provision.sh` (instalação dentro da distro), `wsl/start.sh` e `wsl/stop.sh`.
 
 Limitações: o build do `.exe` e o provisionamento completo da distro não foram executados em Windows nesta sessão. O fluxo Linux (start, health, WebSocket, stop) foi testado com um KasmVNC simulado.
+
+---
+
+## 11. Modo VM (QEMU + WHPX)
+
+Alternativa ao WSL2: um sistema Debian completo em uma máquina virtual QEMU, acelerada pelo Windows Hypervisor Platform (WHPX). A UI continua no navegador, em `http://localhost:8080`.
+
+**Gerar a imagem** (em um Linux com root, ou na distro WSL Debian):
+
+```bash
+sudo apt-get install -y debootstrap parted qemu-utils grub-pc-bin
+sudo ./vm/build-image.sh        # gera vm-build/roblox-linux.qcow2 (demorado: baixa e instala tudo)
+```
+
+**Usar no Windows:** ative "Windows Hypervisor Platform" em Recursos do Windows, extraia os binários do QEMU em `qemu\` ao lado do `RobloxLinux.exe`, copie a imagem para `image\roblox-linux.qcow2` e rode:
+
+```powershell
+.\RobloxLinux.exe vm-install
+.\RobloxLinux.exe vm-start
+.\RobloxLinux.exe vm-stop
+```
+
+**Como o token chega à VM:** o lançador gera o token em `%LOCALAPPDATA%\RobloxLinux\vm-token` e o passa ao QEMU com `-fw_cfg name=opt/roblox/token`. O serviço `roblox-linux.service` lê esse valor no boot. Nada é gravado no disco da imagem.
+
+**Arquivos:** `vm/build-image.sh` (gera o disco), `vm/guest/` (configuração do guest, serviço systemd e leitura do token), `windows/RobloxLinux.c` (comandos `vm-*`).
+
+**Limitações:** a VM não tem acesso à GPU (o QEMU não faz passthrough no Windows), então a renderização é por software. O build da imagem e a execução da VM não foram testados nesta sessão: o sandbox não tem root, debootstrap nem acesso ao mirror Debian.
