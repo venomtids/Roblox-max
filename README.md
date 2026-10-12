@@ -202,3 +202,28 @@ Com o frontend em `http://localhost:8000`, use `http://localhost:8080` como ende
 | Frontend: "Token inválido" | Token digitado diferente do configurado | Confira o valor em `ACCESS_TOKEN`. |
 | Tela preta com cursor | Desktop ainda iniciando ou Wine sem display | Aguarde o XFCE e abra o terminal manualmente. |
 | Desconexões frequentes | Plano sem recursos ou sleep do plano gratuito | Use plano pago com 4 GB de RAM. |
+
+---
+
+## 10. Windows (desktop Linux local via WSL2)
+
+Sem nuvem e sem Electron: um executável de 64 KB (`RobloxLinux.exe`) provisiona uma distro Debian no WSL2 e abre o desktop em `http://localhost:8080`.
+
+Gerar o pacote (em qualquer Linux com Python):
+
+```bash
+python3 -m venv ~/zigenv && ~/zigenv/bin/pip install ziglang
+ZIG="$HOME/zigenv/bin/python -m ziglang" ./windows/build.sh
+```
+
+Saída: `dist/RobloxLinux-windows.zip` (≈220 KB). Dentro do zip, no Windows, rode no PowerShell como administrador:
+
+```powershell
+.\RobloxLinux.exe install   # WSL2 + Debian + XFCE/Wine/Vinegar/KasmVNC (vários minutos)
+.\RobloxLinux.exe start     # abre http://localhost:8080 já conectado
+.\RobloxLinux.exe stop
+```
+
+Arquivos: `windows/RobloxLinux.c` (lançador Win32 em C puro), `windows/build.sh` (cross-compilação com Zig), `wsl/provision.sh` (instalação dentro da distro), `wsl/start.sh` e `wsl/stop.sh`.
+
+Limitações: o build do `.exe` e o provisionamento completo da distro não foram executados em Windows nesta sessão. O fluxo Linux (start, health, WebSocket, stop) foi testado com um KasmVNC simulado.

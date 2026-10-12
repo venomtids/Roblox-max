@@ -28,6 +28,9 @@ const ACCESS_TOKEN = process.env.ACCESS_TOKEN || '';
 const VNC_HOST = process.env.VNC_HOST || '127.0.0.1';
 const VNC_PORT = Number(process.env.VNC_PORT) || 6901;
 const WS_PATH = '/websockify';
+// STATIC_DIR: serve o frontend (docs/) pelo próprio gateway. Usado no modo local (Windows/WSL),
+// onde a página e o WebSocket compartilham a mesma origem.
+const STATIC_DIR = process.env.STATIC_DIR || '';
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
   .map((s) => s.trim().replace(/\/+$/, ''))
@@ -105,9 +108,16 @@ setInterval(() => {
 // ---------------------------------------------------------------------------
 // Verificações de origem e do desktop
 // ---------------------------------------------------------------------------
-function originAllowed(origin) {
+function originAllowed(origin, host, forwardedProto) {
   if (!origin) return true; // clientes não-navegador (ex.: curl) — o token ainda é exigido
-  return ALLOWED_ORIGINS.includes(origin.replace(/\/+$/, ''));
+  const clean = origin.replace(/\/+$/, '');
+  if (ALLOWED_ORIGINS.includes(clean)) return true;
+  // Mesma origem (página servida pelo próprio gateway, ex.: modo local).
+  if (host) {
+    const scheme = (forwardedProto || 'http').split(',')[0].trim();
+    if (clean === `${scheme}://${host}`) return true;
+  }
+  return false;
 }
 
 function checkVnc(timeoutMs = 1000) {
@@ -132,9 +142,12 @@ app.disable('x-powered-by');
 app.set('trust proxy', 1); // Render / Railway ficam atrás de proxy reverso
 app.use(express.json({ limit: '1kb' }));
 
+const originOk = (req) =>
+  originAllowed(req.headers.origin, req.headers.host, req.headers['x-forwarded-proto']);
+
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin && originAllowed(origin)) {
+  if (origin && originOk(req)) {
     res.setHeader('Access-Control-Allow-Origin', origin.replace(/\/+$/, ''));
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -145,7 +158,7 @@ app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
   if (req.method === 'OPTIONS') {
-    res.status(origin && originAllowed(origin) ? 204 : 403).end();
+    res.status(origin && originOk(req) ? 204 : 403).end();
     return;
   }
   next();
@@ -153,12 +166,16 @@ app.use((req, res, next) => {
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin && !originAllowed(origin)) {
+  if (origin && !originOk(req)) {
     res.status(403).json({ error: 'origin_not_allowed' });
     return;
   }
   next();
 });
+
+if (STATIC_DIR) {
+  app.use(express.static(STATIC_DIR, { index: 'index.html', dotfiles: 'ignore', maxAge: 0 }));
+}
 
 // Saúde pública (usada pelo health check da plataforma e pelo Dockerfile)
 app.get('/health', async (_req, res) => {
@@ -264,7 +281,7 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
 
-  if (!originAllowed(req.headers.origin)) {
+  if (!originOk(req)) {
     rejectUpgrade(socket, 403, 'Forbidden');
     return;
   }

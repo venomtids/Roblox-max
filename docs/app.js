@@ -377,4 +377,17 @@ window.addEventListener('beforeunload', () => {
     el.optKeyLock.parentElement.title = 'Keyboard Lock disponível apenas em navegadores Chromium';
   }
   setState('idle');
+
+  // Modo local (RobloxLinux.exe): abre http://localhost:8080/#token=... e conecta automaticamente.
+  // O fragmento (#) nunca é enviado ao servidor, e o auto-connect só ocorre em localhost.
+  const hashParams = new URLSearchParams(window.location.hash.slice(1));
+  const localToken = hashParams.get('token');
+  if (localToken) {
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+    if (['localhost', '127.0.0.1'].includes(window.location.hostname)) {
+      el.serverUrl.value = window.location.origin;
+      el.token.value = localToken;
+      el.form.requestSubmit();
+    }
+  }
 })();

@@ -24,6 +24,8 @@ die() { log "ERRO: $*"; exit 1; }
 : "${VNC_DESKTOP:=xfce}"
 : "${ROBLOX_AUTOSTART:=0}"
 : "${ROBLOX_LAUNCH_CMD:=vinegar}"
+: "${APP_DIR:=/opt/cloud-desktop}"
+: "${VINEGAR_TEMPLATE:=/etc/cloud-desktop/vinegar-config.toml.template}"
 
 export HOME="${HOME:-/home/desktop}"
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -104,7 +106,7 @@ port_open "$VNC_PORT" || {
 VINEGAR_CONFIG="$XDG_CONFIG_HOME/vinegar/config.toml"
 if [[ ! -f "$VINEGAR_CONFIG" ]]; then
   log "Criando configuração inicial do Vinegar em ${VINEGAR_CONFIG}"
-  cp /etc/cloud-desktop/vinegar-config.toml.template "$VINEGAR_CONFIG"
+  cp "$VINEGAR_TEMPLATE" "$VINEGAR_CONFIG"
 fi
 
 if [[ "$ROBLOX_AUTOSTART" == "1" ]]; then
@@ -114,7 +116,7 @@ fi
 
 # --- 6. Gateway Node.js (processo principal) --------------------------------
 log "Iniciando gateway na porta ${PORT}"
-PORT="$PORT" VNC_PORT="$VNC_PORT" node /opt/cloud-desktop/server.js &
+PORT="$PORT" VNC_PORT="$VNC_PORT" node "$APP_DIR/server.js" &
 gateway_pid=$!
 
 cleanup() {
